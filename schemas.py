@@ -66,6 +66,7 @@ class HoldingSentiment:
     event_type: str              # "earnings" | "regulatory" | "lawsuit" | "macro" | "none"
     impact: str                  # "low" | "medium" | "high"
     summary: str
+    catalysts: list[str] = field(default_factory=list)
 
 
 @dataclass
