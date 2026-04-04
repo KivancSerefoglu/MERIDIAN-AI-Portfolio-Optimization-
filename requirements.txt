@@ -1,10 +1,16 @@
-# Phase 0 — minimal deps
-pytest>=8.0
+# Phase 1: data
+yfinance
+pandas
+numpy
 
-# Phase 1 additions (uncomment when ready):
-# yfinance>=0.2.40
-# pandas>=2.2
-# numpy>=1.26
-# openai>=1.0
-# requests>=2.31
-# python-dotenv>=1.0
+# Phase 2: agents
+anthropic
+# openai  # uncomment if using OpenAI instead
+
+# Phase 3: orchestration
+langgraph
+langchain-core
+
+# Phase 4: dashboard
+streamlit
+plotly
