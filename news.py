@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from html import unescape
 from datetime import datetime, timedelta, timezone
@@ -11,6 +12,7 @@ from typing import Any
 from urllib.parse import quote_plus
 from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
+import groq
 
 from schemas import Article
 
@@ -220,3 +222,104 @@ def get_news_json(ticker: str, company_name: str, lookback_days: int) -> str:
     articles = get_news(ticker=ticker, company_name=company_name, lookback_days=lookback_days)
     payload = [article.__dict__ for article in articles]
     return json.dumps(payload, ensure_ascii=True)
+
+
+def build_summarization_user_text(articles: list[Article], company_name: str, ticker: str) -> str:
+    """Build the user message payload from full article content."""
+    max_total_chars = 24000
+    max_article_chars = 4000
+
+    # Start with stable header context for the target entity.
+    header = (
+        f"Target company: {company_name}\\n"
+        f"Target ticker: {ticker.upper().strip()}\\n\\n"
+        "Summarize the following articles:\\n\\n"
+    )
+
+    # Collect article blocks using full content first, then description as fallback.
+    article_blocks: list[str] = []
+    current_len = len(header)
+    for idx, article in enumerate(articles, start=1):
+        body = (article.content or article.description or "").strip()
+        if not body:
+            continue
+
+        # Bound each article payload so a single long page cannot overflow context.
+        if len(body) > max_article_chars:
+            body = body[:max_article_chars].rstrip() + " ...[truncated]"
+
+        block = (
+            f"Article {idx}:\\n"
+            f"Title: {article.title}\\n"
+            f"Source: {article.source}\\n"
+            f"Published: {article.published_at}\\n"
+            f"URL: {article.url}\\n"
+            f"Content: {body}"
+        )
+
+        # Stop adding blocks when reaching the total prompt budget.
+        block_with_sep = ("\\n\\n" if article_blocks else "") + block
+        if current_len + len(block_with_sep) > max_total_chars:
+            break
+        article_blocks.append(block)
+        current_len += len(block_with_sep)
+
+    # Return a focused prompt body with company and ticker context.
+    return header + "\\n\\n".join(article_blocks)
+
+
+def summarize_articles(articles: list[Article], company_name: str, ticker: str) -> str:
+    """Summarize article content for a target company using Groq."""
+    # Read API credentials from the environment.
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise ValueError("GROQ_API_KEY environment variable is not set")
+
+    # Return an explicit fallback when no text is available to summarize.
+    if not any((article.content or article.description or "").strip() for article in articles):
+        return "- No article content available to summarize."
+
+    # Build the user payload expected by the summarization model.
+    user_text = build_summarization_user_text(
+        articles=articles,
+        company_name=company_name,
+        ticker=ticker,
+    )
+
+    # Define model behavior to keep output focused and structured.
+    system_prompt = (
+        "You are a financial news analyst. "
+        "Use only information relevant to the target company and ticker. "
+        "Ignore unrelated content. "
+        "Return a concise structured summary as bullet points with key points only."
+    )
+
+    # Create a Groq client and send the summarization request.
+    client = groq.Groq(api_key=api_key)
+    request_messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_text},
+    ]
+    primary_model = "llama3-8b-8192"
+    fallback_model = "llama-3.1-8b-instant"
+
+    # Try the requested model first, and fall back only if Groq has retired it.
+    try:
+        response = client.chat.completions.create(
+            model=primary_model,
+            messages=request_messages,
+            temperature=0.2,
+        )
+    except groq.BadRequestError as exc:
+        error_code = (getattr(exc, "body", {}) or {}).get("error", {}).get("code")
+        if error_code != "model_decommissioned":
+            raise
+        response = client.chat.completions.create(
+            model=fallback_model,
+            messages=request_messages,
+            temperature=0.2,
+        )
+
+    # Return the model-generated summary text.
+    summary = response.choices[0].message.content or ""
+    return summary.strip() or "- No summary was generated."
