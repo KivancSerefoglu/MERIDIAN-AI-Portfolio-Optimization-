@@ -19,8 +19,6 @@ _USER_AGENT = "Mozilla/5.0 (compatible; ScarletHacksNewsBot/1.0)"
 _YAHOO_RSS = "https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
 _GOOGLE_RSS = "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
 _ARTICLE_FETCH_TIMEOUT = 10
-_ARTICLE_MAX_BYTES = 600_000
-_ARTICLE_MAX_CHARS = 12_000
 
 
 def _clean_text(value: str | None) -> str | None:
@@ -58,7 +56,8 @@ def _extract_items(rss_url: str) -> list[dict[str, Any]]:
     for item in root.findall("./channel/item"):
         title = _clean_text(item.findtext("title"))
         link = _clean_text(item.findtext("link"))
-        description = _clean_text(item.findtext("description"))
+        description = _strip_html_text(item.findtext("description") or "")
+        rss_content = _extract_rss_content(item)
         pub_date = item.findtext("pubDate")
 
         source_node = item.find("source")
@@ -76,11 +75,23 @@ def _extract_items(rss_url: str) -> list[dict[str, Any]]:
                 "url": link,
                 "source": source,
                 "description": description,
-                "content": None,
+                "content": rss_content,
                 "published": published,
             }
         )
     return out
+
+
+def _extract_rss_content(item: ET.Element) -> str | None:
+    content_node = item.find("{http://purl.org/rss/1.0/modules/content/}encoded")
+    if content_node is not None and content_node.text:
+        return _strip_html_text(content_node.text)
+
+    # Fallback for feeds using different prefixes or custom namespaces.
+    for child in item:
+        if child.tag.lower().endswith("encoded") and child.text:
+            return _strip_html_text(child.text)
+    return None
 
 
 def _strip_html_text(html: str) -> str | None:
@@ -88,19 +99,23 @@ def _strip_html_text(html: str) -> str | None:
     no_scripts = re.sub(r"(?is)<(script|style|noscript).*?>.*?</\\1>", " ", html)
     no_tags = re.sub(r"(?is)<[^>]+>", " ", no_scripts)
     text = _clean_text(unescape(no_tags))
-    if not text:
-        return None
-    return text[:_ARTICLE_MAX_CHARS]
+    return text
 
 
 def _extract_article_content(url: str) -> str | None:
+    import trafilatura
+    downloaded = trafilatura.fetch_url(url)
+    if downloaded:
+        text = trafilatura.extract(downloaded, include_comments=False, include_tables=False)
+        if text:
+            return _clean_text(text)
+    # fallback: manual fetch + tag strip
     request = Request(url, headers={"User-Agent": _USER_AGENT})
     try:
         with urlopen(request, timeout=_ARTICLE_FETCH_TIMEOUT) as response:
-            payload = response.read(_ARTICLE_MAX_BYTES)
+            payload = response.read()
     except Exception:
         return None
-
     html = payload.decode("utf-8", errors="ignore")
     return _strip_html_text(html)
 
@@ -181,8 +196,9 @@ def get_news(
     trimmed = filtered[:max_articles]
 
     for item in trimmed:
-        if not item.get("content"):
-            item["content"] = _extract_article_content(item["url"])
+        fetched_content = _extract_article_content(item["url"])
+        if fetched_content:
+            item["content"] = fetched_content
 
     return [
         Article(
