@@ -1,4 +1,6 @@
 # Phase 1: data
+trafilatura
+python 3.13.1
 yfinance
 pandas
 numpy
