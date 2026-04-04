@@ -1,64 +1,60 @@
 import yfinance as yf
 import pandas as pd
-from datetime import datetime, timedelta
 import os
 import pickle
+from datetime import datetime
 
-# Define cache file path
 CACHE_FILE = "data/cache.pkl"
 
-# Load cache if it exists
-def load_cache():
+
+def load_cache() -> dict:
     if os.path.exists(CACHE_FILE):
         with open(CACHE_FILE, "rb") as f:
             return pickle.load(f)
     return {}
 
-# Save cache to file
-def save_cache(cache):
+
+def save_cache(cache: dict) -> None:
+    # Fix 4: ensure the directory exists before writing
+    os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
     with open(CACHE_FILE, "wb") as f:
         pickle.dump(cache, f)
 
-# Fetch market data for a list of tickers
-def get_portfolio_data(tickers):
-    """
-    Given a list of tickers, fetch 60-day price history, current price, sector, beta, and market cap.
-    Returns a clean pandas DataFrame.
-    """
+
+def get_portfolio_data(tickers: list[str]) -> dict[str, dict]:
+
     cache = load_cache()
-    result = []
+    result: dict[str, dict] = {}
     now = datetime.now()
 
     for ticker in tickers:
-        # Check cache
-        if ticker in cache and (now - cache[ticker]['timestamp']).days < 1:
-            result.append(cache[ticker]['data'])
+        # Return cached entry if it's less than 1 day old
+        if ticker in cache and (now - cache[ticker]["timestamp"]).days < 1:
+            result[ticker] = cache[ticker]["data"]
             continue
 
         try:
-            # Fetch data from yfinance
             stock = yf.Ticker(ticker)
-            history = stock.history(period="60d")
+            history = stock.history(period="1y")   # 1y to match risk_agent needs
             info = stock.info
 
-            # Extract relevant data
             data = {
-                "ticker": ticker,
-                "current_price": info.get("currentPrice"),
-                "sector": info.get("sector"),
-                "beta": info.get("beta"),
+                "current_price": (
+                    info.get("currentPrice")
+                    or info.get("regularMarketPrice")
+                    or info.get("previousClose")
+                ),
+                "sector": info.get("sector", "Unknown"),
+                "beta": info.get("beta") or 1.0,
                 "market_cap": info.get("marketCap"),
-                "price_history": history["Close"].tolist(),
+                "price_history": history["Close"],
             }
 
-            # Add to result and cache
-            result.append(data)
+            result[ticker] = data
             cache[ticker] = {"data": data, "timestamp": now}
+
         except Exception as e:
             print(f"Error fetching data for {ticker}: {e}")
 
-    # Save updated cache
     save_cache(cache)
-
-    # Convert result to DataFrame
-    return pd.DataFrame(result)
+    return result

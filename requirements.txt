@@ -6,7 +6,8 @@ pandas
 numpy
 
 # Phase 2: agents
-google
+google.genai
+python-dotenv
 # openai  # uncomment if using OpenAI instead
 
 # Phase 3: orchestration
