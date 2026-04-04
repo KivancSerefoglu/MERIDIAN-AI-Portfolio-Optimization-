@@ -50,10 +50,13 @@ class RiskOutput:
 @dataclass
 class Article:
     ticker: str
+    company_name: str
     title: str
     source: str
-    date: str
-    url: Optional[str] = None
+    published_at: str
+    url: str
+    description: Optional[str] = None
+    content: Optional[str] = None
 
 
 @dataclass
