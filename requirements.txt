@@ -1,10 +1,11 @@
 # Phase 1: data
+python 3.13.1
 yfinance
 pandas
 numpy
 
 # Phase 2: agents
-anthropic
+google
 # openai  # uncomment if using OpenAI instead
 
 # Phase 3: orchestration
