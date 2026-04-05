@@ -14,7 +14,7 @@ from schemas import HoldingSentiment, MarketIntelOutput, PortfolioInput
 
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = "gemma-3-1b-it"
+GEMINI_MODEL = "gemma-3-4b-it"
 
 _NO_NEWS_SENTINELS = {
     "- no article content available to summarize.",
@@ -57,6 +57,7 @@ _SYSTEM_PROMPT = (
 
     "RETURN STRICT JSON ONLY with fields: sentiment_score, event_type, impact, summary, catalysts. "
     "summary must be explain relation between the news and the company's value. Also, summary must be shorter than 3 sentences. catalysts must be a list of short strings and explain relation between the news and the company's value. "
+    "First couple words of catalysts matter most, so try to plan the sentence structure around that. No unnecessary explanations such as ""Recent news highlights"""
 )
 
 

@@ -12,7 +12,7 @@ import textwrap
 from dataclasses import asdict, dataclass
 from typing import Optional
 import debug as debug
-from data.market import get_portfolio_data
+from utilities.market import get_portfolio_data
 from agents.factor_compression import (
     FactorCluster,
     FactorCompression,
@@ -112,6 +112,12 @@ _SECTOR_NAME_MAP = {
     "Communication Services": "Communication Services",
 }
 
+ETF_SECTOR_OVERRIDES = {
+    "GLD": "ETF",
+    "TLT": "ETF",
+    "SPY": "ETF",
+}
+
 def _normalize_sector(name: str) -> str:
     return _SECTOR_NAME_MAP.get(name, name)
 
@@ -127,6 +133,7 @@ def _sector_concentration(
         data = market_data.get(ticker, {})
         price = data.get("current_price") or 0
         sector = _normalize_sector(data.get("sector", "Unknown"))
+        sector = ETF_SECTOR_OVERRIDES.get(ticker, sector)
         sector_values[sector] = sector_values.get(sector, 0) + h["shares"] * price
 
     return [
