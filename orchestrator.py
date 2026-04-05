@@ -189,8 +189,8 @@ def _synthesize_with_claude(
     """)
 
     prompt = textwrap.dedent(f"""\
-        You are a senior portfolio advisor. Below is a combined risk analysis and market
-        intelligence report for an investor's portfolio. Synthesize both into a clear,
+        You are a senior portfolio advisor. Below is a combined risk analysis, factor compression, and market
+        intelligence report for an investor's portfolio. Synthesize all three into a clear,
         actionable advisory.
 
         {risk_section}
@@ -205,10 +205,10 @@ def _synthesize_with_claude(
 
         RECOMMENDATIONS:
         1. <Specific, actionable recommendation referencing actual tickers or metrics>
-        2. <Specific, actionable recommendation>
-        3. <Specific, actionable recommendation>
-        4. <Specific, actionable recommendation>
-        5. <Specific, actionable recommendation>
+        2. <Specific, actionable recommendation> (if applicable, otherwise remove this line)
+        3. <Specific, actionable recommendation> (if applicable, otherwise remove this line)
+        4. <Specific, actionable recommendation> (if applicable, otherwise remove this line)
+        5. <Specific, actionable recommendation> (if applicable, otherwise remove this line)
     """)
 
     try:
