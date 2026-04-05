@@ -12,7 +12,7 @@ import textwrap
 from dataclasses import dataclass
 from typing import Optional
 
-from data.market import get_portfolio_data
+from utilities.market import get_portfolio_data
 from google import genai
 from google.genai import types
 import numpy as np

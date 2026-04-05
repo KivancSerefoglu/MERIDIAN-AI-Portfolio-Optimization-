@@ -6,7 +6,7 @@ from email.utils import format_datetime
 import unittest
 from unittest.mock import patch
 
-from news import get_news, get_news_json
+from utilities.news import get_news, get_news_json
 
 
 class _FakeResponse:
