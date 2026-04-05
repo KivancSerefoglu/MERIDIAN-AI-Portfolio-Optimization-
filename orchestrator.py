@@ -201,15 +201,18 @@ def _synthesize_with_claude(
         Produce your response in EXACTLY this format — no extra text before or after:
 
         SUMMARY:
-        <A 3-5 sentence plain-English overview that explains the portfolio's overall risk
-        posture and current market environment. Reference specific tickers and numbers.>
+        <A 3-5 sentence plain-English overview explaining the portfolio's overall risk and current market environment. 
+        Focus on clear, everyday language rather than detailed statistics or numerical justification. Highlight 
+        the main themes (e.g., concentration, sector exposure, general sentiment) and reference specific tickers 
+        only when helpful for clarity. Avoid citing precise metrics or calculations, as those will be covered in 
+        the Risk Flags section.>
 
         RECOMMENDATIONS:
         1. <Specific, actionable recommendation referencing actual tickers or metrics>
-        2. <Specific, actionable recommendation> (if applicable, otherwise remove this line)
-        3. <Specific, actionable recommendation> (if applicable, otherwise remove this line)
-        4. <Specific, actionable recommendation> (if applicable, otherwise remove this line)
-        5. <Specific, actionable recommendation> (if applicable, otherwise remove this line)
+        2. <Specific, actionable recommendation> (only if applicable, otherwise remove this line)
+        3. <Specific, actionable recommendation> (only if applicable, otherwise remove this line)
+        4. <Specific, actionable recommendation> (only if applicable, otherwise remove this line)
+        5. <Specific, actionable recommendation> (only if applicable, otherwise remove this line)
     """)
 
     try:

@@ -115,12 +115,6 @@ _SECTOR_NAME_MAP = {
     "Communication Services": "Communication Services",
 }
 
-ETF_SECTOR_OVERRIDES = {
-    "GLD": "ETF",
-    "TLT": "ETF",
-    "SPY": "ETF",
-}
-
 def _normalize_sector(name: str) -> str:
     return _SECTOR_NAME_MAP.get(name, name)
 
@@ -136,7 +130,6 @@ def _sector_concentration(
         data = market_data.get(ticker, {})
         price = data.get("current_price") or 0
         sector = _normalize_sector(data.get("sector", "Unknown"))
-        sector = ETF_SECTOR_OVERRIDES.get(ticker, sector)
         sector_values[sector] = sector_values.get(sector, 0) + h["shares"] * price
 
     return [
@@ -336,7 +329,8 @@ _SYSTEM_PROMPT = textwrap.dedent("""\
     - REASON about risks, don't describe numbers — explain WHY each risk matters.
     - Flag compounding risks explicitly (e.g. concentration + correlation = single point of failure).
     - Be ruthlessly concise: no redundancy, no restatement of raw numbers.
-    - critical_risks: only important items, one punchy sentence each (≤25 words).
+    - critical_risks: List only the most important risks as short, punchy sentences (≤25 words each). Prioritize 
+    quantitative evidence (e.g., percentages, concentration levels, metrics) to clearly support each risk.
     - warnings: one actionable "what to do / watch out for" based on critical risks (≤20 words). Do not restate the risk — prescribe a response to it.
     - explanation: 3-5 sentences max. State dominant risk, how factors compound, net verdict.
     - risk_score: integer 0 (very safe) to 100 (extremely dangerous).

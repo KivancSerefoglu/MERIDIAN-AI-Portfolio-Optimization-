@@ -1,9 +1,14 @@
 """Portfolio Advisor — Streamlit UI (Marathon-inspired tactical design)"""
 
+import os
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+
+import orchestrator as _orchestrator_module
+import agents.risk_agent as _risk_agent_module
+import agents.market_intel_agent as _market_intel_module
 
 from main import SAMPLE_PORTFOLIOS
 from orchestrator import run_analysis
@@ -608,6 +613,71 @@ p, span, div, label {{ color: inherit; }}
     100% {{ transform: translateX(-50%); }}
 }}
 
+/* ── Ticker intelligence table (left panel, below summary) ── */
+.ticker-intel-wrap {{
+    background: {PANEL};
+    border: 1px solid {BORDER};
+    border-top: 2px solid {ACCENT};
+    overflow: hidden;
+}}
+.ticker-intel-row {{
+    display: flex;
+    gap: 0.75rem;
+    padding: 0.55rem 1rem;
+    border-bottom: 1px solid {BORDER};
+    align-items: flex-start;
+}}
+.ticker-intel-row:last-child {{ border-bottom: none; }}
+.ti-tkr {{
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 0.9rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    color: {ACCENT};
+    min-width: 3.5rem;
+    flex-shrink: 0;
+    padding-top: 0.05rem;
+}}
+.ti-interp {{
+    font-size: 0.82rem;
+    line-height: 1.55;
+    color: {TEXT};
+}}
+
+/* ── News link list (right panel) ── */
+.news-link-wrap {{
+    background: {PANEL};
+    border: 1px solid {BORDER};
+    padding: 0.4rem 0.75rem;
+}}
+.news-link-item {{
+    display: flex;
+    align-items: flex-start;
+    gap: 0.55rem;
+    padding: 0.4rem 0;
+    border-bottom: 1px solid {BORDER};
+}}
+.news-link-item:last-child {{ border-bottom: none; }}
+.nl-ticker {{
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.64rem;
+    font-weight: 700;
+    color: {ACCENT};
+    min-width: 3rem;
+    flex-shrink: 0;
+    padding-top: 0.1rem;
+}}
+.nl-title a {{
+    color: {BLUE};
+    text-decoration: none;
+    font-size: 0.78rem;
+    line-height: 1.45;
+}}
+.nl-title a:hover {{
+    color: {ACCENT};
+    text-decoration: underline;
+}}
+
 /* ── Plotly chart borders — no individual scroll ── */
 .stPlotlyChart > div {{
     border: 1px solid {BORDER} !important;
@@ -791,44 +861,64 @@ def _render_header() -> None:
 """, unsafe_allow_html=True)
 
 
-# ── News ticker ─────────────────────────────────────────────────────────────────
+# ── Live price fetch ────────────────────────────────────────────────────────────
 
-def _render_ticker(holdings_sentiment: list | None) -> None:
-    if not holdings_sentiment:
-        items_html = "".join([
-            f'<span class="ticker-item"><span class="ti-sym">{sym}</span>'
-            f'<span class="ti-score-neu">AWAITING ANALYSIS</span>'
-            f'<span class="ti-dot">◆</span></span>'
-            for sym in ["NVDA", "AAPL", "MSFT", "GOOGL", "META", "AMZN", "TSLA", "JPM"]
-        ])
-    else:
-        def _item(hs) -> str:
-            s = hs.sentiment_score
-            if s > 0.05:
-                score_cls = "ti-score-pos"
-                score_txt = f"+{s:.2f}"
-            elif s < -0.05:
-                score_cls = "ti-score-neg"
-                score_txt = f"{s:.2f}"
+@st.cache_data(ttl=60)
+def _fetch_prices(tickers_tuple: tuple) -> dict:
+    """Return {ticker: {price, change_pct}} via yfinance fast_info (cached 60 s)."""
+    import yfinance as yf
+    result = {}
+    for t in tickers_tuple:
+        try:
+            fi = yf.Ticker(t).fast_info
+            price = fi.last_price
+            prev  = fi.previous_close
+            if price is not None and prev:
+                result[t] = {"price": price, "change_pct": (price - prev) / prev * 100}
+        except Exception:
+            pass
+    return result
+
+
+# ── Price ticker ─────────────────────────────────────────────────────────────────
+
+def _render_ticker(holdings: list[dict]) -> None:
+    tickers = [h["ticker"] for h in holdings] if holdings else [
+        "NVDA", "AAPL", "MSFT", "GOOGL", "META", "AMZN", "TSLA", "JPM"
+    ]
+    prices = _fetch_prices(tuple(tickers))
+
+    def _item(ticker: str) -> str:
+        if ticker in prices:
+            p = prices[ticker]
+            price  = p["price"]
+            change = p["change_pct"]
+            if change > 0:
+                score_cls, change_str = "ti-score-pos", f"+{change:.2f}%"
+            elif change < 0:
+                score_cls, change_str = "ti-score-neg", f"{change:.2f}%"
             else:
-                score_cls = "ti-score-neu"
-                score_txt = f"{s:+.2f}"
-            summary = hs.summary[:80] + "…" if len(hs.summary) > 80 else hs.summary
+                score_cls, change_str = "ti-score-neu", f"{change:.2f}%"
             return (
                 f'<span class="ticker-item">'
-                f'<span class="ti-sym">{hs.ticker}</span>'
-                f'<span class="{score_cls}">{score_txt}</span>'
-                f'&nbsp;{summary}'
+                f'<span class="ti-sym">{ticker}</span>'
+                f'&nbsp;${price:.2f}&nbsp;'
+                f'<span class="{score_cls}">{change_str}</span>'
                 f'<span class="ti-dot">◆</span></span>'
             )
-        items_html = "".join(_item(hs) for hs in holdings_sentiment)
+        return (
+            f'<span class="ticker-item">'
+            f'<span class="ti-sym">{ticker}</span>'
+            f'<span class="ti-score-neu">—</span>'
+            f'<span class="ti-dot">◆</span></span>'
+        )
 
-    # Duplicate track for seamless loop
+    items_html = "".join(_item(t) for t in tickers)
     track = items_html * 2
 
     st.markdown(f"""
 <div class="ticker-wrap">
-    <div class="ticker-badge">MARKET INTEL</div>
+    <div class="ticker-badge">LIVE PRICES</div>
     <div class="ticker-scroll">
         <div class="ticker-track">{track}</div>
     </div>
@@ -860,9 +950,27 @@ def _render_portfolio_table(holdings: list[dict]) -> None:
 """, unsafe_allow_html=True)
 
 
+# ── Sentiment colour helper ────────────────────────────────────────────────────
+
+def _sentiment_row_style(score: float) -> str:
+    """Return inline CSS for a ticker-intel row based on sentiment score (-1..+1)."""
+    intensity = min(abs(score), 1.0)
+    alpha = round(0.07 + intensity * 0.23, 2)
+    if score >= 0.05:
+        bg   = f"rgba(90,150,96,{alpha})"
+        border = LOW
+    elif score <= -0.05:
+        bg   = f"rgba(188,74,54,{alpha})"
+        border = HIGH
+    else:
+        bg   = "transparent"
+        border = BORDER
+    return f"background:{bg};border-left:3px solid {border};"
+
+
 # ── Left panel — summary, advisory, recommendations ────────────────────────────
 
-def _render_left_analysis(advisory: dict | None, risk: RiskOutput) -> None:
+def _render_left_analysis(advisory: dict | None, risk: RiskOutput, market_intel: MarketIntelOutput | None = None) -> None:
     if advisory:
         summary = advisory.get("summary", "")
         recs = advisory.get("recommendations", [])
@@ -886,6 +994,32 @@ def _render_left_analysis(advisory: dict | None, risk: RiskOutput) -> None:
     <p style="color:{MUTED};font-style:italic">LLM advisory unavailable — showing computed metrics only.</p>
 </div>
 """, unsafe_allow_html=True)
+
+    # ── Ticker News Interpretation ──
+    sentiment_map: dict[str, float] = {}
+    if market_intel and market_intel.holdings_sentiment:
+        sentiment_map = {hs.ticker: hs.sentiment_score for hs in market_intel.holdings_sentiment}
+        tickers: list[str] = [hs.ticker for hs in market_intel.holdings_sentiment]
+    elif risk.max_drawdowns:
+        tickers = list(risk.max_drawdowns.keys())
+    else:
+        tickers = []
+
+    if tickers:
+        st.markdown('<div class="sec-lbl">Market Intelligence</div>', unsafe_allow_html=True)
+        rows_html = ""
+        for ticker in tickers:
+            score = sentiment_map.get(ticker, 0.0)
+            row_style = _sentiment_row_style(score)
+            rows_html += (
+                f'<div class="ticker-intel-row" style="{row_style}">'
+                f'<span class="ti-tkr">{ticker}</span>'
+                f'<span class="ti-interp" style="color:{MUTED};font-style:italic;">'
+                f'Portfolio-level news interpretation coming soon.'
+                f'</span>'
+                f'</div>'
+            )
+        st.markdown(f'<div class="ticker-intel-wrap">{rows_html}</div>', unsafe_allow_html=True)
 
     # ── Recommendations ──
     if recs:
@@ -921,42 +1055,12 @@ def _render_left_analysis(advisory: dict | None, risk: RiskOutput) -> None:
 
 # ── Right panel — charts & risk ────────────────────────────────────────────────
 
-def _render_right_panel(risk: RiskOutput, container) -> None:
+def _render_right_panel(risk: RiskOutput, market_intel: MarketIntelOutput | None, container) -> None:
     with container:
         score = risk.risk_score
-        lvl_label, lvl_cls = _risk_level(score)
         risk_color = _risk_color(score)
 
-        # ── Risk score card ──
-        st.markdown(f"""
-<div class="risk-score-card">
-    <div class="risk-num" style="color:{risk_color}">{score:.0f}<span class="risk-denom">/100</span></div>
-    <div class="risk-lbl">Portfolio Risk Score</div>
-    <div class="risk-lvl {lvl_cls}">{lvl_label}</div>
-</div>
-""", unsafe_allow_html=True)
-
-        # ── Mini metrics ──
-        avg_c = _avg_corr(risk.correlation_matrix)
-        worst_dd = min(risk.max_drawdowns.values(), default=0.0)
-        st.markdown(f"""
-<div class="mini-metrics">
-    <div class="mm-cell">
-        <div class="mm-lbl">Beta</div>
-        <div class="mm-val">{risk.portfolio_beta:.2f}</div>
-    </div>
-    <div class="mm-cell">
-        <div class="mm-lbl">Avg Corr</div>
-        <div class="mm-val">{avg_c:.2f}</div>
-    </div>
-    <div class="mm-cell">
-        <div class="mm-lbl">Worst DD</div>
-        <div class="mm-val">{worst_dd:.1%}</div>
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-        # ── Gauge ──
+        # ── Gauge (replaces risk score card — same number, visual form) ──
         st.markdown('<div class="chart-hd">Risk Gauge</div>', unsafe_allow_html=True)
         gauge = go.Figure(go.Indicator(
             mode="gauge+number",
@@ -978,6 +1082,51 @@ def _render_right_panel(risk: RiskOutput, container) -> None:
         gauge.update_layout(**_plt_layout(height=180, margin_top=8))
         gauge.update_layout(showlegend=False)
         st.plotly_chart(gauge, use_container_width=True, config={"displayModeBar": False})
+
+        # ── Mini metrics ──
+        avg_c = _avg_corr(risk.correlation_matrix)
+        worst_dd = min(risk.max_drawdowns.values(), default=0.0)
+        st.markdown(f"""
+<div class="mini-metrics">
+    <div class="mm-cell">
+        <div class="mm-lbl">Beta</div>
+        <div class="mm-val">{risk.portfolio_beta:.2f}</div>
+    </div>
+    <div class="mm-cell">
+        <div class="mm-lbl">Avg Corr</div>
+        <div class="mm-val">{avg_c:.2f}</div>
+    </div>
+    <div class="mm-cell">
+        <div class="mm-lbl">Worst DD</div>
+        <div class="mm-val">{worst_dd:.1%}</div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+        # ── News — title + link per ticker ──
+        news_tickers: list[str] = []
+        if market_intel and market_intel.holdings_sentiment:
+            news_tickers = [hs.ticker for hs in market_intel.holdings_sentiment]
+        elif market_intel and market_intel.articles:
+            seen: set[str] = set()
+            for a in market_intel.articles:
+                if a.ticker not in seen:
+                    news_tickers.append(a.ticker)
+                    seen.add(a.ticker)
+
+        if news_tickers:
+            st.markdown('<div class="chart-hd">News</div>', unsafe_allow_html=True)
+            items_html = ""
+            for ticker in news_tickers:
+                items_html += (
+                    f'<div class="news-link-item">'
+                    f'<span class="nl-ticker">{ticker}</span>'
+                    f'<span class="nl-title">'
+                    f'<a href="#" target="_blank">News headline coming soon</a>'
+                    f'</span>'
+                    f'</div>'
+                )
+            st.markdown(f'<div class="news-link-wrap">{items_html}</div>', unsafe_allow_html=True)
 
         # ── Sector concentration ──
         if risk.sector_concentration:
@@ -1074,6 +1223,32 @@ def main() -> None:
 
     # ── Sidebar ─────────────────────────────────────────────────────────────────
     with st.sidebar:
+        # ── API Key ──────────────────────────────────────────────────────────────
+        st.markdown('<div class="sidebar-head">API Configuration</div>', unsafe_allow_html=True)
+        api_key_input = st.text_input(
+            "Gemini API Key",
+            value=st.session_state.get("gemini_api_key", ""),
+            type="password",
+            placeholder="AIza…",
+            help="Get your key at aistudio.google.com",
+            label_visibility="collapsed",
+        )
+        if api_key_input:
+            st.session_state.gemini_api_key = api_key_input.strip()
+        st.markdown(
+            f'<div style="font-size:0.62rem;color:{MUTED};font-family:\'Barlow Condensed\',sans-serif;'
+            f'letter-spacing:0.12em;margin-bottom:0.9rem;">'
+            f'Get a free key at <a href="https://aistudio.google.com" target="_blank" '
+            f'style="color:{ACCENT};text-decoration:none;">aistudio.google.com</a></div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            f'<hr style="border:none;border-top:1px solid {BORDER};margin:0 0 0.8rem;">',
+            unsafe_allow_html=True,
+        )
+
+        # ── Portfolio Input ───────────────────────────────────────────────────────
         st.markdown('<div class="sidebar-head">Portfolio Input</div>', unsafe_allow_html=True)
 
         input_mode = st.radio(
@@ -1139,6 +1314,18 @@ def main() -> None:
 
     # ── Run analysis ─────────────────────────────────────────────────────────────
     if st.session_state.get("run_analysis") and not st.session_state.get("analysis_done"):
+        # Propagate user-supplied API key into all agent modules before running
+        _user_key = st.session_state.get("gemini_api_key", "").strip()
+        if _user_key:
+            os.environ["GEMINI_API_KEY"] = _user_key
+            _orchestrator_module.GEMINI_API_KEY = _user_key
+            _risk_agent_module.GEMINI_API_KEY = _user_key
+            _market_intel_module.GEMINI_API_KEY = _user_key
+        elif not st.session_state.get("gemini_api_key"):
+            st.session_state.run_analysis = False
+            st.error("Enter your Gemini API key in the sidebar before running analysis.")
+            st.stop()
+
         _overlay = st.empty()
         _overlay.markdown("""
 <div id="analysis-overlay">
@@ -1186,8 +1373,7 @@ def main() -> None:
     result = st.session_state.get("analysis_result")
 
     # ── News ticker ───────────────────────────────────────────────────────────────
-    intel: MarketIntelOutput | None = result["market_intel"] if result else None
-    _render_ticker(intel.holdings_sentiment if intel else None)
+    _render_ticker(holdings)
 
     # ── Two-column layout ─────────────────────────────────────────────────────────
     col_left, col_right = st.columns([0.65, 0.35])
@@ -1202,7 +1388,7 @@ def main() -> None:
                 st.error(f"Partial results — {result['error']}")
 
             if result.get("risk"):
-                _render_left_analysis(result.get("advisory"), result["risk"])
+                _render_left_analysis(result.get("advisory"), result["risk"], result.get("market_intel"))
             else:
                 st.error("Analysis failed — no risk data available.")
 
@@ -1218,14 +1404,11 @@ def main() -> None:
 </div>
 """, unsafe_allow_html=True)
 
-    # ── Right column (scrollable) ─────────────────────────────────────────────────
+    # ── Right column ──────────────────────────────────────────────────────────────
     with col_right:
-        # Use 800px when charts are present (enables inner scroll), otherwise
-        # "content" so the pending placeholder sizes naturally without a scrollbar.
-        panel_height = 800 if (result and result.get("risk")) else "content"
-        right_container = st.container(height=panel_height, border=False)
+        right_container = st.container(border=False)
         if result and result.get("risk"):
-            _render_right_panel(result["risk"], right_container)
+            _render_right_panel(result["risk"], result.get("market_intel"), right_container)
         else:
             _render_right_pending(right_container)
 
