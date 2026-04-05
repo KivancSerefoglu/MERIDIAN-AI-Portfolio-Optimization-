@@ -56,6 +56,18 @@ p, span, div, label {{ color: inherit; }}
 }}
 [data-testid="stSidebar"] > div:first-child {{
     padding: 1.5rem 1.2rem 1.5rem;
+    display: flex;
+    flex-direction: column;
+}}
+/* Kill the massive blank gap Streamlit injects above sidebar content */
+[data-testid="stSidebar"] section[data-testid="stSidebarContent"] > div:first-child {{
+    padding-top: 0.5rem !important;
+    margin-top: 0 !important;
+}}
+/* Collapse the extra top spacing block Streamlit adds in newer versions */
+[data-testid="stSidebarContent"] > div > div[data-testid="stVerticalBlock"] > div:first-child {{
+    margin-top: 0 !important;
+    padding-top: 0 !important;
 }}
 .sidebar-head {{
     font-family: 'Barlow Condensed', sans-serif;
@@ -72,7 +84,7 @@ p, span, div, label {{ color: inherit; }}
 /* ── Buttons ── */
 [data-testid="stButton"] > button {{
     background: {ACCENT} !important;
-    color: {PANEL} !important;
+    color: {TEXT} !important;
     border: none !important;
     border-radius: 0 !important;
     font-family: 'Barlow Condensed', sans-serif !important;
@@ -85,7 +97,9 @@ p, span, div, label {{ color: inherit; }}
     transition: background 0.15s ease;
 }}
 [data-testid="stButton"] > button:hover {{
-    background: {TEXT} !important;
+    background: {PANEL} !important;
+    color: {ACCENT} !important;
+    border: 2px solid {ACCENT} !important;
 }}
 
 /* ── Text inputs / textareas ── */
@@ -107,6 +121,45 @@ p, span, div, label {{ color: inherit; }}
     letter-spacing: 0.22em !important;
     text-transform: uppercase !important;
     color: {MUTED} !important;
+}}
+
+/* ── Radio: outer ring border — gold for ALL states ── */
+[data-testid="stRadio"] [role="radio"] > div:first-child {{
+    border-color: {ACCENT} !important;
+}}
+
+/* ── Radio: unchecked — hollow gold ring ── */
+[data-testid="stRadio"] [role="radio"][aria-checked="false"] > div:first-child {{
+    background-color: transparent !important;
+    border-color: {ACCENT} !important;
+}}
+[data-testid="stRadio"] [role="radio"][aria-checked="false"] > div:first-child > div {{
+    background-color: transparent !important;
+}}
+
+/* ── Radio: checked — gold fill, white inner dot ── */
+[data-testid="stRadio"] [role="radio"][aria-checked="true"] > div:first-child {{
+    background-color: {ACCENT} !important;
+    border-color: {ACCENT} !important;
+}}
+[data-testid="stRadio"] [role="radio"][aria-checked="true"] > div:first-child > div {{
+    background-color: {PANEL} !important;
+}}
+
+/* ── Baseweb fallback selectors ── */
+[role="radiogroup"] [aria-checked="false"] > div:first-child {{
+    background-color: transparent !important;
+    border-color: {ACCENT} !important;
+}}
+[role="radiogroup"] [aria-checked="false"] > div:first-child > div {{
+    background-color: transparent !important;
+}}
+[role="radiogroup"] [aria-checked="true"] > div:first-child {{
+    background-color: {ACCENT} !important;
+    border-color: {ACCENT} !important;
+}}
+[role="radiogroup"] [aria-checked="true"] > div:first-child > div {{
+    background-color: {PANEL} !important;
 }}
 
 /* ── Radio option labels ── */
@@ -146,16 +199,20 @@ p, span, div, label {{ color: inherit; }}
 /* ── Spinner — hide the default widget ── */
 [data-testid="stSpinner"] {{ display: none !important; }}
 
-/* ── Analysis overlay ── */
+/* ── Analysis overlay — blocks all interaction ── */
 #analysis-overlay {{
     position: fixed;
     inset: 0;
+    width: 100vw;
+    height: 100vh;
     background: rgba(26,25,24,0.6);
     backdrop-filter: blur(3px);
-    z-index: 99999;
+    z-index: 1999999;
     display: flex;
     align-items: center;
     justify-content: center;
+    pointer-events: all;
+    cursor: wait;
 }}
 #analysis-overlay .card {{
     background: {PANEL};
@@ -485,13 +542,14 @@ p, span, div, label {{ color: inherit; }}
 .ticker-wrap {{
     position: fixed;
     bottom: 0; left: 0; right: 0;
+    width: 100vw;
     height: 40px;
     background: {TEXT};
     border-top: 2px solid {ACCENT};
     display: flex;
     align-items: center;
     overflow: hidden;
-    z-index: 9999;
+    z-index: 2000000;
     font-size: 0;            /* collapse whitespace */
 }}
 .ticker-badge {{
@@ -550,9 +608,19 @@ p, span, div, label {{ color: inherit; }}
     100% {{ transform: translateX(-50%); }}
 }}
 
-/* ── Plotly chart borders ── */
+/* ── Plotly chart borders — no individual scroll ── */
 .stPlotlyChart > div {{
     border: 1px solid {BORDER} !important;
+    overflow: hidden !important;
+}}
+.stPlotlyChart {{
+    overflow: hidden !important;
+}}
+
+/* ── Right panel scrollable section ── */
+[data-testid="stVerticalBlockBorderWrapper"] > div[style*="overflow"] {{
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
 }}
 
 /* ── Remove column default padding gaps ── */
@@ -606,8 +674,16 @@ def _plt_layout(height: int = 240, margin_top: int = 12) -> dict:
 
 # ── Helper functions ────────────────────────────────────────────────────────────
 
-def parse_holdings_text(text: str) -> list[dict]:
-    holdings = []
+def parse_holdings_text(text: str) -> tuple[list[dict], list[str]]:
+    """
+    Parse CSV holdings text. Returns (holdings, warnings).
+    - Skips lines with zero shares (with warning).
+    - Raises ValueError for negative shares.
+    - Deduplicates tickers by summing shares and computing weighted-average cost.
+    """
+    raw: list[dict] = []
+    warnings_out: list[str] = []
+
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -616,14 +692,48 @@ def parse_holdings_text(text: str) -> list[dict]:
         if len(parts) < 3:
             continue
         try:
-            holdings.append({
-                "ticker": parts[0].upper(),
-                "shares": float(parts[1]),
-                "cost": float(parts[2]),
-            })
+            ticker = parts[0].upper()
+            shares = float(parts[1])
+            cost = float(parts[2])
         except ValueError:
             continue
-    return holdings
+
+        if shares < 0:
+            raise ValueError(
+                f"Negative shares are not supported ({ticker}: {shares}). "
+                "Remove short positions before running analysis."
+            )
+        if shares == 0:
+            warnings_out.append(f"{ticker} skipped — zero shares.")
+            continue
+
+        raw.append({"ticker": ticker, "shares": shares, "cost": cost})
+
+    # Deduplicate: merge rows with the same ticker
+    merged: dict[str, dict] = {}
+    for h in raw:
+        t = h["ticker"]
+        if t in merged:
+            prev = merged[t]
+            total_shares = prev["shares"] + h["shares"]
+            # weighted-average cost basis
+            merged[t] = {
+                "ticker": t,
+                "shares": total_shares,
+                "cost": round(
+                    (prev["cost"] * prev["shares"] + h["cost"] * h["shares"])
+                    / total_shares,
+                    4,
+                ),
+            }
+            warnings_out.append(
+                f"{t} appears multiple times — "
+                f"merged into {total_shares} shares @ ${merged[t]['cost']:.2f} avg cost."
+            )
+        else:
+            merged[t] = h
+
+    return list(merged.values()), warnings_out
 
 
 def _risk_level(score: float) -> tuple[str, str]:
@@ -973,6 +1083,8 @@ def main() -> None:
         )
 
         portfolio_data: dict | None = None
+        # Always initialise to avoid UnboundLocalError when switching modes
+        parse_warnings: list[str] = []
 
         if input_mode == "Preset portfolio":
             preset_key = st.selectbox(
@@ -988,14 +1100,27 @@ def main() -> None:
                 height=180,
                 help="TICKER, SHARES, COST — one per line",
             )
-            portfolio_data = {"holdings": parse_holdings_text(text_input)}
+            try:
+                parsed_holdings, parse_warnings = parse_holdings_text(text_input)
+            except ValueError as _parse_err:
+                parsed_holdings, parse_warnings = [], []
+                st.error(str(_parse_err))
+            portfolio_data = {"holdings": parsed_holdings}
+            for _w in parse_warnings:
+                st.warning(_w)
 
-        st.markdown("---")
+        # ── FIX: Run Analysis button sits directly below the input controls,
+        #    with only a thin rule instead of st.markdown("---") + extra spacing.
+        st.markdown(
+            f'<hr style="border:none;border-top:1px solid {BORDER};margin:0.75rem 0 0.6rem;">',
+            unsafe_allow_html=True,
+        )
 
         if not portfolio_data or not portfolio_data.get("holdings"):
             st.warning("No valid holdings.")
         else:
             if st.button("▶  Run Analysis"):
+                # Reset all analysis state so a fresh run always executes
                 st.session_state.run_analysis = True
                 st.session_state.portfolio_data = portfolio_data
                 st.session_state.analysis_done = False
@@ -1004,7 +1129,7 @@ def main() -> None:
 
         st.markdown("""
 <div style="margin-top:1.5rem; font-size:0.68rem; color:{muted}; font-family:'Barlow Condensed',sans-serif; letter-spacing:0.12em; line-height:1.7;">
-    Powered by Gemini · yfinance · LangGraph
+    Powered by Python · Streamlit · Gemini · yfinance · LangGraph
 </div>
 """.format(muted=MUTED), unsafe_allow_html=True)
 
@@ -1053,7 +1178,10 @@ def main() -> None:
                 }
         finally:
             _overlay.empty()
-        st.session_state.analysis_done = True
+            # Mark done AND clear the trigger flag so switching presets
+            # and clicking Run Analysis again will always re-execute.
+            st.session_state.analysis_done = True
+            st.session_state.run_analysis = False
 
     result = st.session_state.get("analysis_result")
 
@@ -1078,7 +1206,7 @@ def main() -> None:
             else:
                 st.error("Analysis failed — no risk data available.")
 
-        elif not st.session_state.get("run_analysis"):
+        elif not st.session_state.get("analysis_done"):
             st.markdown(f"""
 <div style="padding:2rem 0;">
     <div class="sec-lbl">Instructions</div>
@@ -1092,8 +1220,10 @@ def main() -> None:
 
     # ── Right column (scrollable) ─────────────────────────────────────────────────
     with col_right:
-        # st.container(height=...) creates a scrollable box in Streamlit ≥ 1.31
-        right_container = st.container(height=680, border=False)
+        # Use 800px when charts are present (enables inner scroll), otherwise
+        # "content" so the pending placeholder sizes naturally without a scrollbar.
+        panel_height = 800 if (result and result.get("risk")) else "content"
+        right_container = st.container(height=panel_height, border=False)
         if result and result.get("risk"):
             _render_right_panel(result["risk"], right_container)
         else:

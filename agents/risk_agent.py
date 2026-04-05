@@ -258,32 +258,45 @@ def compute_metrics(portfolio: dict) -> ComputedMetrics:
             f"  understate sector concentration. Re-run to retry.\n"
         )
 
-    # Build price DataFrame
+    # Build price DataFrame — use unique tickers only
+    seen_tickers: set[str] = set()
     price_series = {}
     for t in tickers:
-        if t in market_data:
-            series = market_data[t]["price_history"]
-            if not isinstance(series, pd.Series):
-                series = pd.Series(series)
-            idx = series.index
-            if hasattr(idx, "tz") and idx.tz is not None:
-                idx = idx.tz_convert("UTC").tz_localize(None)
-            series = series.copy()
-            series.index = pd.to_datetime(idx).normalize()
-            price_series[t] = series
+        if t in seen_tickers:
+            continue
+        seen_tickers.add(t)
+        if t not in market_data:
+            continue
+        series = market_data[t]["price_history"]
+        if not isinstance(series, pd.Series):
+            series = pd.Series(series)
+        if series.empty:
+            print(f"[WARNING] Empty price history for {t}, skipping.")
+            continue
+        idx = series.index
+        if hasattr(idx, "tz") and idx.tz is not None:
+            idx = idx.tz_convert("UTC").tz_localize(None)
+        series = series.copy()
+        series.index = pd.to_datetime(idx).normalize()
+        price_series[t] = series
 
-    prices = pd.DataFrame(price_series).ffill().dropna(how="any")
+    # dropna(how="all") keeps rows that have data for at least one ticker;
+    # ffill handles sporadic missing days without discarding valid data.
+    prices = pd.DataFrame(price_series).ffill().dropna(how="all")
 
     if prices.empty:
-        raise ValueError(f"No price data returned for tickers: {tickers}")
+        raise ValueError(f"No price data returned for tickers: {list(seen_tickers)}")
 
     total_value = sum(
         h["shares"] * (market_data[h["ticker"]].get("current_price") or 0)
         for h in holdings
         if h["ticker"] in market_data
     )
-    if total_value == 0:
-        raise ValueError("Portfolio market value is zero — check tickers.")
+    if total_value <= 0:
+        raise ValueError(
+            f"Portfolio market value is {total_value:,.2f} — "
+            "check for zero-share or short positions that offset long holdings."
+        )
 
     sector_exposures = _sector_concentration(holdings, total_value, market_data)
     corr_dict, high_corr_pairs, avg_corr = _correlation_matrix(prices)

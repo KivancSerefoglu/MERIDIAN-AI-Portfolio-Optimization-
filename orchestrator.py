@@ -182,12 +182,16 @@ def _synthesize_with_claude(
         <A 3-5 sentence plain-English overview that explains the portfolio's overall risk
         posture and current market environment. Reference specific tickers and numbers.>
 
+        <Recommendations must be actionable steps the user can take. Risk Flags must be 
+        factual threshold violations only — no advice, no repetition of recommendations. 
+        Do not repeat any point across sections.>
+
         RECOMMENDATIONS:
         1. <Specific, actionable recommendation referencing actual tickers or metrics>
-        2. <Specific, actionable recommendation>
-        3. <Specific, actionable recommendation>
-        4. <Specific, actionable recommendation>
-        5. <Specific, actionable recommendation>
+        2. <Specific, actionable recommendation> (only if there is a second distinct recommendation to make)
+        3. <Specific, actionable recommendation> (only if there is a third distinct recommendation to make)
+        4. <Specific, actionable recommendation> (only if there is a fourth distinct recommendation to make)
+        5. <Specific, actionable recommendation> (only if there is a fifth distinct recommendation to make)
     """)
 
     try:
