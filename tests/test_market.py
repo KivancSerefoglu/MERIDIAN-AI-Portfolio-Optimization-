@@ -3,7 +3,7 @@ import pandas as pd
 import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from data.market import get_portfolio_data
+from utilities.market import get_portfolio_data
 
 class TestMarketData(unittest.TestCase):
 

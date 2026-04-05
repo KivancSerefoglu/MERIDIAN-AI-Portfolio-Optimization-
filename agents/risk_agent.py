@@ -18,6 +18,8 @@ from agents.factor_compression import (
     FactorCompression,
     compute_factor_compression,
 )
+
+from utilities.market import get_portfolio_data
 from google import genai
 from google.genai import types
 import numpy as np

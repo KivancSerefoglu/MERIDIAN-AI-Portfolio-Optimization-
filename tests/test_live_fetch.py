@@ -9,7 +9,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, PROJECT_ROOT)
 
 from agents.market_intel_agent import market_intel_agent
-from news import build_summarization_user_text, get_news, summarize_articles
+from utilities.news import build_summarization_user_text, get_news, summarize_articles
 
 PORTFOLIO = [
     {"ticker": "AAPL", "name": "Apple Inc."},
