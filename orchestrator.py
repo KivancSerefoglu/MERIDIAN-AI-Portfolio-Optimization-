@@ -6,6 +6,7 @@ Flow: START → [risk_node, market_intel_node] (parallel) → synthesizer_node �
 
 from __future__ import annotations
 
+import json
 import os
 import textwrap
 from typing import Optional, TypedDict
@@ -318,11 +319,15 @@ def run_analysis(portfolio: dict) -> Advisory:
 # ── Smoke test ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+
+    # Load a sample portfolio from data/real_sample_portfolios.json
+    data_path = os.path.join(os.path.dirname(__file__), "data", "real_sample_portfolios.json")
+    with open(data_path, "r", encoding="utf-8") as f:
+        real_sample_portfolios = json.load(f)
+
+    portfolio_name = "heavily_concentrated_tech_portfolio"
     sample_portfolio = {
-        "holdings": [
-            {"ticker": "NVDA", "shares": 50, "cost": 120},
-            {"ticker": "AAPL", "shares": 30, "cost": 150},
-        ]
+        "holdings": real_sample_portfolios[portfolio_name]
     }
 
     print("=" * 60)
