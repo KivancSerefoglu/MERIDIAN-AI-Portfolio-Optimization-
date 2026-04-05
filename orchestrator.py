@@ -37,15 +37,18 @@ class GraphState(TypedDict):
 
 # ── News helper ──────────────────────────────────────────────────────────────
 
-def _fetch_news(portfolio: dict) -> dict[str, str]:
+def _fetch_news(portfolio: dict) -> tuple[dict[str, str], list]:
     """
     Fetch recent news headlines per ticker via yfinance.
-    Returns dict[ticker -> concatenated news text].
-    Falls back to empty string on any failure.
+    Returns (dict[ticker -> concatenated news text], list[Article]).
+    Falls back to empty string / empty list on any failure.
     """
     import yfinance as yf
+    from schemas import Article
 
     news_dict: dict[str, str] = {}
+    articles: list[Article] = []
+
     for holding in portfolio.get("holdings", []):
         ticker = str(holding.get("ticker", "")).upper().strip()
         if not ticker:
@@ -54,19 +57,41 @@ def _fetch_news(portfolio: dict) -> dict[str, str]:
             items = yf.Ticker(ticker).news or []
             parts: list[str] = []
             for item in items[:10]:
-                title = item.get("content", {}).get("title", "") or item.get("title", "")
+                content = item.get("content", {})
+                title = content.get("title", "") or item.get("title", "")
                 desc = (
-                    item.get("content", {}).get("summary", "")
+                    content.get("summary", "")
                     or item.get("summary", "")
                     or item.get("description", "")
                 )
+                url = (
+                    content.get("canonicalUrl", {}).get("url", "")
+                    or content.get("clickThroughUrl", {}).get("url", "")
+                    or item.get("link", "")
+                    or item.get("url", "")
+                )
+                source = content.get("provider", {}).get("displayName", "") or item.get("source", "")
+                published_at = content.get("pubDate", "") or item.get("providerPublishTime", "")
+                if isinstance(published_at, (int, float)):
+                    from datetime import datetime, timezone
+                    published_at = datetime.fromtimestamp(published_at, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
                 if title:
                     parts.append(f"- {title}" + (f": {desc}" if desc else ""))
+                    articles.append(Article(
+                        ticker=ticker,
+                        company_name="",
+                        title=title,
+                        source=source,
+                        published_at=str(published_at),
+                        url=url,
+                        description=desc or None,
+                    ))
             news_dict[ticker] = "\n".join(parts)
         except Exception:
             news_dict[ticker] = ""
 
-    return news_dict
+    return news_dict, articles
 
 
 # ── Conversion: agent RiskOutput → schema RiskOutput ────────────────────────
@@ -108,8 +133,8 @@ def risk_node(state: GraphState) -> dict:
 
 
 def market_intel_node(state: GraphState) -> dict:
-    news = _fetch_news(state["portfolio"])
-    result = market_intel_agent(state["portfolio"], news)
+    news, articles = _fetch_news(state["portfolio"])
+    result = market_intel_agent(state["portfolio"], news, articles)
     return {"market_intel_output": result}
 
 
@@ -189,6 +214,13 @@ def _synthesize_with_claude(
 {sentiment_lines}
     """)
 
+    tickers = sorted({hs.ticker for hs in intel.holdings_sentiment})
+    ticker_comment_template = "\n".join(
+        f"  {t}: <1-3 sentences on how current news and risk data affect {t}'s price outlook; "
+        f"state whether the net impact is positive, negative, or neutral>"
+        for t in tickers
+    )
+
     prompt = textwrap.dedent(f"""\
         You are a senior portfolio advisor. Below is a combined risk analysis, factor compression, and market
         intelligence report for an investor's portfolio. Synthesize all three into a clear,
@@ -210,6 +242,9 @@ def _synthesize_with_claude(
         3. <Specific, actionable recommendation> (if applicable, otherwise remove this line)
         4. <Specific, actionable recommendation> (if applicable, otherwise remove this line)
         5. <Specific, actionable recommendation> (if applicable, otherwise remove this line)
+
+        TICKER COMMENTS:
+{ticker_comment_template}
     """)
 
     try:
@@ -223,17 +258,34 @@ def _synthesize_with_claude(
 
     response_text = response.candidates[0].content.parts[0].text.strip()
 
-    # Parse SUMMARY and RECOMMENDATIONS sections
+    # Parse SUMMARY, RECOMMENDATIONS, and TICKER COMMENTS sections
     summary = ""
     recommendations: list[str] = []
+    ticker_comments: dict[str, str] = {}
 
     if "SUMMARY:" in response_text and "RECOMMENDATIONS:" in response_text:
-        rec_split = response_text.split("RECOMMENDATIONS:")
+        has_ticker_section = "TICKER COMMENTS:" in response_text
+
+        if has_ticker_section:
+            rec_part, ticker_part = response_text.split("TICKER COMMENTS:", 1)
+        else:
+            rec_part, ticker_part = response_text, ""
+
+        rec_split = rec_part.split("RECOMMENDATIONS:")
         summary = rec_split[0].replace("SUMMARY:", "").strip()
         for line in rec_split[1].strip().splitlines():
             line = line.strip()
             if line and line[0].isdigit() and len(line) > 2 and line[1] in ".)":
                 recommendations.append(line[2:].strip())
+
+        # Parse "  TICKER: comment" lines
+        for line in ticker_part.strip().splitlines():
+            line = line.strip()
+            if ":" in line:
+                ticker_raw, _, comment = line.partition(":")
+                ticker_key = ticker_raw.strip().upper()
+                if ticker_key and comment.strip():
+                    ticker_comments[ticker_key] = comment.strip()
     else:
         summary = response_text
         recommendations = ["Review portfolio manually — structured advisory could not be parsed."]
@@ -245,6 +297,7 @@ def _synthesize_with_claude(
         recommendations=recommendations,
         risk=schema_risk,
         market_intel=intel,
+        ticker_comments=ticker_comments,
     )
 
 
@@ -360,3 +413,19 @@ if __name__ == "__main__":
         print("  Catalysts  :")
         for c in advisory.market_intel.catalysts:
             print(f"    - [{c.grade:+d}] {c.text}")
+
+    if advisory.ticker_comments:
+        print("\nTICKER NEWS IMPACT COMMENTS")
+        print("-" * 60)
+        # Group articles by ticker for quick lookup
+        articles_by_ticker: dict[str, list] = {}
+        for a in advisory.market_intel.articles:
+            articles_by_ticker.setdefault(a.ticker, []).append(a)
+
+        for ticker, comment in advisory.ticker_comments.items():
+            print(f"\n  {ticker}: {comment}")
+            for a in articles_by_ticker.get(ticker, []):
+                title_line = f"    - {a.title}"
+                if a.url:
+                    title_line += f" ({a.url})"
+                print(title_line)
