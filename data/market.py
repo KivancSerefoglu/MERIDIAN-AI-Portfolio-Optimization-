@@ -15,7 +15,6 @@ def load_cache() -> dict:
 
 
 def save_cache(cache: dict) -> None:
-    # Fix 4: ensure the directory exists before writing
     os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
     with open(CACHE_FILE, "wb") as f:
         pickle.dump(cache, f)
