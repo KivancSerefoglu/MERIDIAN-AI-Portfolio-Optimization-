@@ -60,20 +60,26 @@ class Article:
 
 
 @dataclass
+class Catalyst:
+    text: str
+    grade: int  # -3 to +3
+
+
+@dataclass
 class HoldingSentiment:
     ticker: str
-    sentiment_score: float       # -1 to +1
+    sentiment_score: float       # -1 to +1 (computed from catalyst grades)
     event_type: str              # "earnings" | "regulatory" | "lawsuit" | "macro" | "none"
     impact: str                  # "low" | "medium" | "high"
     summary: str
-    catalysts: list[str] = field(default_factory=list)
+    catalysts: list[Catalyst] = field(default_factory=list)
 
 
 @dataclass
 class MarketIntelOutput:
     sentiment_score: float                     # aggregate -1 to +1
     holdings_sentiment: list[HoldingSentiment]
-    catalysts: list[str]                       # list of active catalyst descriptions
+    catalysts: list[Catalyst]                  # active catalysts prefixed with ticker
     articles: list[Article]
 
 
