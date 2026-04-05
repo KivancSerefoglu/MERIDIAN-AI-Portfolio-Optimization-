@@ -135,13 +135,16 @@ def _no_news_holding(ticker: str) -> HoldingSentiment:
 
 
 def _parse_llm_json(content: str) -> dict[str, Any]:
+    import re
     text = (content or "").strip()
+    # Strip markdown code fences
     if text.startswith("```"):
-        parts = text.split("```")
-        text = parts[1] if len(parts) > 1 else text
-        if text.startswith("json"):
-            text = text[4:]
-        text = text.strip()
+        inner = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+        text = inner.group(1).strip() if inner else text.split("```", 2)[1].lstrip("json").strip()
+    # Extract first {...} block in case the model appended extra text
+    match = re.search(r"\{[\s\S]*\}", text)
+    if match:
+        text = match.group(0)
     return json.loads(text)
 
 
@@ -160,10 +163,14 @@ def _analyze_summary_with_llm(client: genai.Client, ticker: str, summary_text: s
         contents=full_prompt,
         config=types.GenerateContentConfig(
             temperature=0.1,
+            response_mime_type="application/json",
         ),
     )
 
-    parsed = _parse_llm_json(response.text or "")
+    try:
+        parsed = _parse_llm_json(response.text or "")
+    except (json.JSONDecodeError, ValueError):
+        return _no_news_holding(ticker)
     catalysts_raw = parsed.get("catalysts", [])
     catalysts: list[Catalyst] = []
     if isinstance(catalysts_raw, list):
@@ -220,6 +227,7 @@ def _aggregate_sentiment(holdings: list[dict[str, Any]], scored: list[HoldingSen
 def market_intel_agent(
     portfolio: Any,
     news: dict[str, str],
+    articles: list | None = None,
 ) -> MarketIntelOutput:
     """Analyze summarized news by ticker and produce structured market intelligence."""
     if not GEMINI_API_KEY:
@@ -259,5 +267,5 @@ def market_intel_agent(
         sentiment_score=round(aggregate_score, 4),
         holdings_sentiment=holdings_sentiment,
         catalysts=active_catalysts,
-        articles=[],
+        articles=list(articles) if articles else [],
     )
