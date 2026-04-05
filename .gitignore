@@ -5,3 +5,4 @@ venv/
 .cache/
 *.egg-info/
 data/
+data/cache.pkl

@@ -9,10 +9,15 @@ from __future__ import annotations
 import json
 import os
 import textwrap
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Optional
-
+import debug as debug
 from data.market import get_portfolio_data
+from agents.factor_compression import (
+    FactorCluster,
+    FactorCompression,
+    compute_factor_compression,
+)
 from google import genai
 from google.genai import types
 import numpy as np
@@ -64,6 +69,8 @@ class ComputedMetrics:
     correlation_matrix: dict[str, dict[str, float]]
     portfolio_beta: float
     drawdowns: list[DrawdownResult]
+    # Hidden Factor Compression Layer
+    factor_compression: Optional[FactorCompression]
     # Derived summaries fed to LLM
     max_sector_weight: float
     max_sector_name: str
@@ -96,6 +103,16 @@ class RiskOutput:
 
 #  STAGE 1: COMPUTATION 
 
+_SECTOR_NAME_MAP = {
+    "Financial Services": "Financials",
+    "Consumer Defensive": "Consumer Staples",
+    "Healthcare":         "Health Care",
+    "Communication Services": "Communication Services",
+}
+
+def _normalize_sector(name: str) -> str:
+    return _SECTOR_NAME_MAP.get(name, name)
+
 def _sector_concentration(
     holdings: list[dict],
     total_value: float,
@@ -107,7 +124,7 @@ def _sector_concentration(
         ticker = h["ticker"]
         data = market_data.get(ticker, {})
         price = data.get("current_price") or 0
-        sector = data.get("sector", "Unknown")
+        sector = _normalize_sector(data.get("sector", "Unknown"))
         sector_values[sector] = sector_values.get(sector, 0) + h["shares"] * price
 
     return [
@@ -130,7 +147,6 @@ def _correlation_matrix(
     """Returns (corr_dict, high_corr_pairs, avg_pairwise_corr)."""
     returns = prices.pct_change().dropna()
     returns = returns.tail(lookback_days)
-
 
     if returns.shape[1] < 2:
         return {}, [], 0.0
@@ -200,7 +216,8 @@ def compute_metrics(portfolio: dict) -> ComputedMetrics:
     """
     Stage 1 entry point.
     Fetches market data via market.py (single fetch, cached) and computes
-    all four risk metrics. Returns ComputedMetrics — pure numbers, zero interpretation.
+    all four risk metrics + factor compression. Returns ComputedMetrics —
+    pure numbers, zero interpretation.
     """
     holdings: list[dict] = portfolio.get("holdings", [])
     if not holdings:
@@ -210,8 +227,6 @@ def compute_metrics(portfolio: dict) -> ComputedMetrics:
         h["ticker"] = h["ticker"].upper()
     tickers = [h["ticker"] for h in holdings]
 
-    # Retry up to 3 times with backoff — yfinance occasionally drops a ticker
-    # due to rate limiting or a curl_cffi mid-request interrupt.
     import time
     market_data: dict = {}
     for attempt in range(3):
@@ -234,16 +249,13 @@ def compute_metrics(portfolio: dict) -> ComputedMetrics:
             f"  understate sector concentration. Re-run to retry.\n"
         )
 
-    # Build price DataFrame from pre-fetched Series (DatetimeIndex preserved)
-    # Collect Series with their index properly aligned
+    # Build price DataFrame
     price_series = {}
     for t in tickers:
         if t in market_data:
             series = market_data[t]["price_history"]
             if not isinstance(series, pd.Series):
                 series = pd.Series(series)
-            # Normalize to date-only index so all tickers align regardless of
-            # timezone or intraday timestamp differences in yfinance output
             idx = series.index
             if hasattr(idx, "tz") and idx.tz is not None:
                 idx = idx.tz_convert("UTC").tz_localize(None)
@@ -251,7 +263,6 @@ def compute_metrics(portfolio: dict) -> ComputedMetrics:
             series.index = pd.to_datetime(idx).normalize()
             price_series[t] = series
 
-    # Create DataFrame from Series dict — pandas will align by index
     prices = pd.DataFrame(price_series).ffill().dropna(how="any")
 
     if prices.empty:
@@ -270,6 +281,9 @@ def compute_metrics(portfolio: dict) -> ComputedMetrics:
     beta = _portfolio_beta(holdings, total_value, market_data)
     drawdowns = _max_drawdowns(prices)
 
+    # Hidden Factor Compression Layer (separate module)
+    factor_compression = compute_factor_compression(prices, market_data)
+
     top_sector = max(sector_exposures, key=lambda e: e.portfolio_weight) if sector_exposures else None
     worst_dd = min(drawdowns, key=lambda d: d.max_drawdown) if drawdowns else None
 
@@ -279,6 +293,7 @@ def compute_metrics(portfolio: dict) -> ComputedMetrics:
         correlation_matrix=corr_dict,
         portfolio_beta=beta,
         drawdowns=drawdowns,
+        factor_compression=factor_compression,
         max_sector_weight=top_sector.portfolio_weight if top_sector else 0.0,
         max_sector_name=top_sector.sector if top_sector else "N/A",
         avg_pairwise_correlation=avg_corr,
@@ -290,21 +305,41 @@ def compute_metrics(portfolio: dict) -> ComputedMetrics:
 #  STAGE 2: LLM INTERPRETATION (Gemini) 
 
 _SYSTEM_PROMPT = textwrap.dedent("""\
-    You are a senior portfolio risk analyst. You receive quantitative portfolio
-    metrics and must provide a rigorous, investor-grade risk assessment.
+    You are a senior portfolio risk analyst. Provide a concise, investor-grade risk assessment.
 
-    Your job is NOT to describe the numbers — it is to REASON about them:
-    - Identify which risks are most critical and explain WHY.
-    - Explicitly call out when risk factors COMPOUND each other
-      (e.g. high sector concentration + high correlation means one shock
-      hits the entire portfolio simultaneously).
-    - Assign a risk score from 0 (very safe) to 100 (extremely dangerous).
-    - Write warnings that an investor can act on.
+    Rules:
+    - REASON about risks, don't describe numbers — explain WHY each risk matters.
+    - Flag compounding risks explicitly (e.g. concentration + correlation = single point of failure).
+    - Be ruthlessly concise: no redundancy, no restatement of raw numbers.
+    - critical_risks: only important items, one punchy sentence each (≤25 words).
+    - warnings: one actionable "what to do / watch out for" based on critical risks (≤20 words). Do not restate the risk — prescribe a response to it.
+    - explanation: 3-5 sentences max. State dominant risk, how factors compound, net verdict.
+    - risk_score: integer 0 (very safe) to 100 (extremely dangerous).
+    - Pairwise correlation measures short-term co-movement; factor compression measures latent structural exposure.
+    - If SPY appears in a high-correlation cluster, explicitly state “market beta clustering detected".                                 
 
-    Respond ONLY with valid JSON matching this exact schema:
+    - Effective N interpretation guide:
+        - >10 = well diversified
+        - 6-10 = moderately concentrated
+        - 3-5 = highly factor concentrated
+        - <3 = extreme single-factor risk
+                                 
+    Only flag as a risk if:
+    - A single sector exceeds 35%" of portfolio weight
+    - Sector deviation from benchmark exceeds +20%
+    - Beta > 1.3
+    - Avg correlation > 0.65 or high-corr pairs exist
+    - A single stock drawdown exceeds 40% AND its portfolio weight exceeds 10%
+    - Always flag any single-stock drawdown exceeding 50%, regardless of position size.
+    - Effective N / num_holdings ratio (compression_ratio) below 0.5 — meaning more than half the apparent diversification is illusory.
+    - A portfolio with beta <1.0, no drawdown >40%, and avg correlation <0.3, scores above 60 require multiple multiple uncorrelated risk drivers; otherwise, risk is moderated.
+
+    Do NOT flag underweights. Do NOT invent risks from missing sectors.
+
+    Respond ONLY with valid JSON:
     {
       "risk_score": <integer 0-100>,
-      "critical_risks": [<string>, <string>, ...],
+      "critical_risks": [<string>, ...],
       "warnings": [<string>, <string>, <string>],
       "explanation": <string>
     }
@@ -330,6 +365,27 @@ def _build_metrics_prompt(metrics: ComputedMetrics) -> str:
         else "None above 0.85 threshold"
     )
 
+    # Factor compression section
+    fc = metrics.factor_compression
+    if fc:
+        cluster_lines = "\n".join(
+            f"    Cluster {c.cluster_id + 1} ({c.dominant_sector}): "
+            f"{', '.join(c.tickers)} "
+            f"({'standalone' if c.avg_intra_correlation is None else f'avg intra-correlation: {c.avg_intra_correlation:.2f}'})"
+            for c in fc.clusters
+        )
+        factor_section = textwrap.dedent(f"""\
+        HIDDEN FACTOR COMPRESSION
+        Holdings count: {fc.num_holdings}
+        Effective independent bets: {fc.effective_n}
+        Compression ratio: {fc.compression_ratio:.1%} (1.0 = perfectly diversified, lower = illusory diversification)
+        Variance explained by top 3 factors: {fc.variance_explained_top3:.1%}
+        Correlated clusters:
+{cluster_lines}
+        """)
+    else:
+        factor_section = "HIDDEN FACTOR COMPRESSION\n        Not computed (fewer than 2 holdings with price data).\n"
+
     return textwrap.dedent(f"""\
         Analyse the following portfolio risk metrics and return your assessment as JSON.
 
@@ -346,6 +402,7 @@ def _build_metrics_prompt(metrics: ComputedMetrics) -> str:
         Average pairwise correlation: {metrics.avg_pairwise_correlation:.2f}
         Highly correlated pairs (>0.85): {high_corr_text}
 
+        {factor_section}
         PORTFOLIO BETA
         Weighted-average beta: {metrics.portfolio_beta:.2f}
         (Market beta = 1.0. Values >1.2 are aggressive, >1.5 are high-risk.)
@@ -356,12 +413,8 @@ def _build_metrics_prompt(metrics: ComputedMetrics) -> str:
 {drawdown_lines}
 
         === INSTRUCTIONS ===
-        Reason about how these factors interact. For example:
-        - High concentration + high correlation = catastrophic single-point-of-failure
-        - High beta + large drawdowns = evidence of extreme realised volatility
-        - Sector deviation far above benchmark = unintended concentrated bet
-
-        Return valid JSON only.
+        Identify the 1-2 dominant risk factors, note any compounding interactions
+        (especially if effective N reveals illusory diversification), and return JSON only.
     """)
 
 
@@ -384,7 +437,6 @@ def interpret_with_gemini(metrics: ComputedMetrics) -> LLMInterpretation:
     )
     raw_text = response.candidates[0].content.parts[0].text.strip()
 
-    # Strip markdown fences if Gemini wraps JSON in them
     if raw_text.startswith("```"):
         parts = raw_text.split("```")
         raw_text = parts[1] if len(parts) > 1 else raw_text
@@ -436,19 +488,35 @@ def risk_agent(portfolio: dict) -> RiskOutput:
 if __name__ == "__main__":
     sample_portfolio = {
         "holdings": [
-            # --- Tech cluster 1 (very high correlation) ---
-            {"ticker": "NVDA", "shares": 40, "cost": 120},
-            {"ticker": "AMD",  "shares": 60, "cost": 110},
-            {"ticker": "MSFT", "shares": 25, "cost": 280},
+            # --- Mega-cap tech cluster (high correlation stress test) ---
+            {"ticker": "AAPL", "shares": 25, "cost": 180},
+            {"ticker": "MSFT", "shares": 20, "cost": 310},
+            {"ticker": "NVDA", "shares": 15, "cost": 450},
+            {"ticker": "GOOGL", "shares": 30, "cost": 140},
+            {"ticker": "AMZN", "shares": 22, "cost": 160},
+            {"ticker": "META", "shares": 18, "cost": 300},
 
-            # --- Tech cluster 2 (another high correlation group) ---
-            {"ticker": "AAPL", "shares": 30, "cost": 150},
-            {"ticker": "QCOM", "shares": 35, "cost": 140},
+            # --- High beta “risk amplifiers” ---
+            {"ticker": "TSLA", "shares": 12, "cost": 250},
+            {"ticker": "PLTR", "shares": 40, "cost": 25},
 
-            # --- Non-tech anchors (lower correlation, control group) ---
-            {"ticker": "JPM",  "shares": 25, "cost": 140},
-            {"ticker": "XOM",  "shares": 20, "cost": 110},
-            {"ticker": "PG",   "shares": 30, "cost": 160},
+            # --- Financial sector (cycle exposure) ---
+            {"ticker": "JPM", "shares": 25, "cost": 150},
+            {"ticker": "BAC", "shares": 40, "cost": 40},
+
+            # --- Defensive sector (low correlation anchors) ---
+            {"ticker": "PG", "shares": 35, "cost": 155},
+            {"ticker": "KO", "shares": 60, "cost": 60},
+            {"ticker": "PEP", "shares": 30, "cost": 170},
+
+            # --- Energy (macro-sensitive divergence) ---
+            {"ticker": "XOM", "shares": 30, "cost": 110},
+
+            # --- Hedge / low correlation asset ---
+            {"ticker": "GLD", "shares": 20, "cost": 190},
+
+            # --- Market baseline proxy (optional compression anchor) ---
+            {"ticker": "SPY", "shares": 10, "cost": 450},
         ]
     }
 
@@ -461,6 +529,16 @@ if __name__ == "__main__":
     print(f"Worst drawdown      : {m.worst_drawdown_ticker} {m.worst_drawdown_pct:.1%}")
     print(f"High-corr pairs     : {m.high_corr_pairs or 'none'}")
 
+    if m.factor_compression:
+        fc = m.factor_compression
+        print(f"\n--- Factor Compression ---")
+        print(f"Effective N         : {fc.effective_n} / {fc.num_holdings} holdings")
+        print(f"Compression ratio   : {fc.compression_ratio:.1%}")
+        print(f"Top 3 factors       : {fc.variance_explained_top3:.1%} of variance")
+        for c in fc.clusters:
+            rho = f"ρ={c.avg_intra_correlation:.2f}" if c.avg_intra_correlation is not None else "standalone"
+            print(f"  Cluster {c.cluster_id+1} ({c.dominant_sector}): {', '.join(c.tickers)} ({rho})")
+
     print("\n=== STAGE 2: Gemini interpretation ===")
     result = risk_agent(sample_portfolio)
     print(f"Risk Score  : {result.risk_score} / 100")
@@ -471,4 +549,3 @@ if __name__ == "__main__":
     print(f"\nWarnings:")
     for w in result.warnings:
         print(f"  * {w}")
-    
