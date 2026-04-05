@@ -7,6 +7,7 @@ import os
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
+from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
@@ -14,9 +15,10 @@ import traceback
 
 from schemas import Catalyst, HoldingSentiment, MarketIntelOutput, PortfolioInput
 
+load_dotenv()
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = "gemini-2.5-flash"  # or "gemini-1.5-pro", etc.
+GEMINI_MODEL = "gemini-2.5-flash"
 
 _NO_NEWS_SENTINELS = {
     "- no article content available to summarize.",

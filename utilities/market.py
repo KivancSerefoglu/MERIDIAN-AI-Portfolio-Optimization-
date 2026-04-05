@@ -4,6 +4,31 @@ import os
 import pickle
 from datetime import datetime
 
+# Sector overrides for tickers yfinance can't classify (delisted, ETFs, etc.)
+_SECTOR_FALLBACK: dict[str, str] = {
+    "BBBY": "Consumer Discretionary",
+    "BRK.B": "Financials",
+    "BRK.A": "Financials",
+    "SPY":   "ETF",
+    "QQQ":   "ETF",
+    "IWM":   "ETF",
+    "GLD":   "ETF",
+    "SLV":   "ETF",
+    "USO":   "ETF",
+    "TLT":   "ETF",
+    "XLU":   "ETF",
+    "XLF":   "ETF",
+    "XLE":   "ETF",
+    "XLK":   "ETF",
+    "XLV":   "ETF",
+    "XLI":   "ETF",
+    "XLB":   "ETF",
+    "XLRE":  "ETF",
+    "XLY":   "ETF",
+    "XLP":   "ETF",
+    "XLC":   "ETF",
+}
+
 CACHE_FILE = "data/cache.pkl"
 
 
@@ -43,7 +68,7 @@ def get_portfolio_data(tickers: list[str]) -> dict[str, dict]:
                     or info.get("regularMarketPrice")
                     or info.get("previousClose")
                 ),
-                "sector": info.get("sector", "Unknown"),
+                "sector": info.get("sector") or _SECTOR_FALLBACK.get(ticker, "Unknown"),
                 "beta": info.get("beta") or 1.0,
                 "market_cap": info.get("marketCap"),
                 "price_history": history["Close"],
