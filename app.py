@@ -970,7 +970,13 @@ def _sentiment_row_style(score: float) -> str:
 
 # ── Left panel — summary, advisory, recommendations ────────────────────────────
 
-def _render_left_analysis(advisory: dict | None, risk: RiskOutput, market_intel: MarketIntelOutput | None = None) -> None:
+def _render_left_analysis(
+    advisory: dict | None,
+    risk: RiskOutput,
+    market_intel: MarketIntelOutput | None = None,
+    ticker_comments: dict[str, str] | None = None,
+) -> None:
+    ticker_comments = ticker_comments or {}
     if advisory:
         summary = advisory.get("summary", "")
         recs = advisory.get("recommendations", [])
@@ -997,8 +1003,11 @@ def _render_left_analysis(advisory: dict | None, risk: RiskOutput, market_intel:
 
     # ── Ticker News Interpretation ──
     sentiment_map: dict[str, float] = {}
+    summary_map: dict[str, str] = {}
     if market_intel and market_intel.holdings_sentiment:
-        sentiment_map = {hs.ticker: hs.sentiment_score for hs in market_intel.holdings_sentiment}
+        for hs in market_intel.holdings_sentiment:
+            sentiment_map[hs.ticker] = hs.sentiment_score
+            summary_map[hs.ticker] = hs.summary
         tickers: list[str] = [hs.ticker for hs in market_intel.holdings_sentiment]
     elif risk.max_drawdowns:
         tickers = list(risk.max_drawdowns.keys())
@@ -1006,17 +1015,23 @@ def _render_left_analysis(advisory: dict | None, risk: RiskOutput, market_intel:
         tickers = []
 
     if tickers:
-        st.markdown('<div class="sec-lbl">Market Intelligence</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sec-lbl">Ticker Intelligence</div>', unsafe_allow_html=True)
         rows_html = ""
         for ticker in tickers:
             score = sentiment_map.get(ticker, 0.0)
             row_style = _sentiment_row_style(score)
+            # Prefer LLM ticker comment → market intel summary → placeholder
+            interp = (
+                ticker_comments.get(ticker)
+                or summary_map.get(ticker)
+                or "Interpretation pending."
+            )
+            is_placeholder = interp == "Interpretation pending."
+            interp_style = f"color:{MUTED};font-style:italic;" if is_placeholder else f"color:{TEXT};"
             rows_html += (
                 f'<div class="ticker-intel-row" style="{row_style}">'
                 f'<span class="ti-tkr">{ticker}</span>'
-                f'<span class="ti-interp" style="color:{MUTED};font-style:italic;">'
-                f'Portfolio-level news interpretation coming soon.'
-                f'</span>'
+                f'<span class="ti-interp" style="{interp_style}">{interp}</span>'
                 f'</div>'
             )
         st.markdown(f'<div class="ticker-intel-wrap">{rows_html}</div>', unsafe_allow_html=True)
@@ -1103,26 +1118,17 @@ def _render_right_panel(risk: RiskOutput, market_intel: MarketIntelOutput | None
 </div>
 """, unsafe_allow_html=True)
 
-        # ── News — title + link per ticker ──
-        news_tickers: list[str] = []
-        if market_intel and market_intel.holdings_sentiment:
-            news_tickers = [hs.ticker for hs in market_intel.holdings_sentiment]
-        elif market_intel and market_intel.articles:
-            seen: set[str] = set()
-            for a in market_intel.articles:
-                if a.ticker not in seen:
-                    news_tickers.append(a.ticker)
-                    seen.add(a.ticker)
-
-        if news_tickers:
+        # ── News — title + link per article ──
+        if market_intel and market_intel.articles:
             st.markdown('<div class="chart-hd">News</div>', unsafe_allow_html=True)
             items_html = ""
-            for ticker in news_tickers:
+            for article in market_intel.articles:
+                url = article.url if article.url else "#"
                 items_html += (
                     f'<div class="news-link-item">'
-                    f'<span class="nl-ticker">{ticker}</span>'
+                    f'<span class="nl-ticker">{article.ticker}</span>'
                     f'<span class="nl-title">'
-                    f'<a href="#" target="_blank">News headline coming soon</a>'
+                    f'<a href="{url}" target="_blank" rel="noopener noreferrer">{article.title}</a>'
                     f'</span>'
                     f'</div>'
                 )
@@ -1343,6 +1349,7 @@ def main() -> None:
                     "summary": advisory_obj.summary,
                     "recommendations": advisory_obj.recommendations,
                 },
+                "ticker_comments": advisory_obj.ticker_comments,
                 "market_intel": advisory_obj.market_intel,
                 "error": None,
             }
@@ -1388,7 +1395,12 @@ def main() -> None:
                 st.error(f"Partial results — {result['error']}")
 
             if result.get("risk"):
-                _render_left_analysis(result.get("advisory"), result["risk"], result.get("market_intel"))
+                _render_left_analysis(
+                    result.get("advisory"),
+                    result["risk"],
+                    result.get("market_intel"),
+                    result.get("ticker_comments", {}),
+                )
             else:
                 st.error("Analysis failed — no risk data available.")
 
