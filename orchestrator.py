@@ -6,6 +6,7 @@ Flow: START → [risk_node, market_intel_node] (parallel) → synthesizer_node �
 
 from __future__ import annotations
 
+import json
 import os
 import textwrap
 from typing import Optional, TypedDict
@@ -133,6 +134,26 @@ def _synthesize_with_claude(
 
     client = genai.Client(api_key=GEMINI_API_KEY)
 
+    # Build factor compression section if available
+    fc = agent_risk.computed.factor_compression
+    if fc:
+        cluster_lines = "\n".join(
+            f"    Cluster {c.cluster_id + 1} ({c.dominant_sector}): "
+            f"{', '.join(c.tickers)} "
+            f"({'standalone' if c.avg_intra_correlation is None else f'avg intra-correlation: {c.avg_intra_correlation:.2f}'})"
+            for c in fc.clusters
+        )
+        factor_section = textwrap.dedent(f"""\
+        FACTOR COMPRESSION
+        Holdings count: {fc.num_holdings}
+        Effective N: {fc.effective_n} (compression ratio: {fc.compression_ratio:.1%})
+        Variance explained by top 3 factors: {fc.variance_explained_top3:.1%}
+        Correlated clusters:
+{cluster_lines}
+        """)
+    else:
+        factor_section = "\nFACTOR COMPRESSION\nNot computed (fewer than 2 holdings with price data).\n"
+
     risk_section = textwrap.dedent(f"""\
         RISK ANALYSIS
         -------------
@@ -143,6 +164,7 @@ def _synthesize_with_claude(
         Worst Drawdown  : {agent_risk.computed.worst_drawdown_ticker} ({agent_risk.computed.worst_drawdown_pct:.1%})
         High-Corr Pairs : {", ".join(agent_risk.computed.high_corr_pairs) or "None above 0.85"}
 
+        {factor_section}
         Critical Risks (ranked):
         {chr(10).join(f"  {i + 1}. {r}" for i, r in enumerate(agent_risk.critical_risks))}
 
@@ -161,15 +183,15 @@ def _synthesize_with_claude(
         MARKET INTELLIGENCE
         -------------------
         Aggregate Sentiment : {intel.sentiment_score:+.4f}  (range -1 to +1)
-        Active Catalysts    : {", ".join(intel.catalysts) or "None identified"}
+        Active Catalysts    : {", ".join(f"{c.text} [{c.grade:+d}]" for c in intel.catalysts) or "None identified"}
 
         Per-holding sentiment:
 {sentiment_lines}
     """)
 
     prompt = textwrap.dedent(f"""\
-        You are a senior portfolio advisor. Below is a combined risk analysis and market
-        intelligence report for an investor's portfolio. Synthesize both into a clear,
+        You are a senior portfolio advisor. Below is a combined risk analysis, factor compression, and market
+        intelligence report for an investor's portfolio. Synthesize all three into a clear,
         actionable advisory.
 
         {risk_section}
@@ -184,10 +206,10 @@ def _synthesize_with_claude(
 
         RECOMMENDATIONS:
         1. <Specific, actionable recommendation referencing actual tickers or metrics>
-        2. <Specific, actionable recommendation>
-        3. <Specific, actionable recommendation>
-        4. <Specific, actionable recommendation>
-        5. <Specific, actionable recommendation>
+        2. <Specific, actionable recommendation> (if applicable, otherwise remove this line)
+        3. <Specific, actionable recommendation> (if applicable, otherwise remove this line)
+        4. <Specific, actionable recommendation> (if applicable, otherwise remove this line)
+        5. <Specific, actionable recommendation> (if applicable, otherwise remove this line)
     """)
 
     try:
@@ -297,11 +319,15 @@ def run_analysis(portfolio: dict) -> Advisory:
 # ── Smoke test ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+
+    # Load a sample portfolio from data/real_sample_portfolios.json
+    data_path = os.path.join(os.path.dirname(__file__), "data", "real_sample_portfolios.json")
+    with open(data_path, "r", encoding="utf-8") as f:
+        real_sample_portfolios = json.load(f)
+
+    portfolio_name = "heavily_concentrated_tech_portfolio"
     sample_portfolio = {
-        "holdings": [
-            {"ticker": "NVDA", "shares": 50, "cost": 120},
-            {"ticker": "AAPL", "shares": 30, "cost": 150},
-        ]
+        "holdings": real_sample_portfolios[portfolio_name]
     }
 
     print("=" * 60)
@@ -332,5 +358,5 @@ if __name__ == "__main__":
     print(f"  Sentiment  : {advisory.market_intel.sentiment_score:+.4f}")
     if advisory.market_intel.catalysts:
         print("  Catalysts  :")
-        for c in advisory.market_intel.catalysts[:]:
-            print(f"    - {c}")
+        for c in advisory.market_intel.catalysts:
+            print(f"    - [{c.grade:+d}] {c.text}")
