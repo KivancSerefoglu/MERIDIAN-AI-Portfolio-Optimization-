@@ -183,7 +183,7 @@ def _synthesize_with_claude(
         MARKET INTELLIGENCE
         -------------------
         Aggregate Sentiment : {intel.sentiment_score:+.4f}  (range -1 to +1)
-        Active Catalysts    : {", ".join(intel.catalysts) or "None identified"}
+        Active Catalysts    : {", ".join(f"{c.text} [{c.grade:+d}]" for c in intel.catalysts) or "None identified"}
 
         Per-holding sentiment:
 {sentiment_lines}
@@ -358,5 +358,5 @@ if __name__ == "__main__":
     print(f"  Sentiment  : {advisory.market_intel.sentiment_score:+.4f}")
     if advisory.market_intel.catalysts:
         print("  Catalysts  :")
-        for c in advisory.market_intel.catalysts[:]:
-            print(f"    - {c}")
+        for c in advisory.market_intel.catalysts:
+            print(f"    - [{c.grade:+d}] {c.text}")

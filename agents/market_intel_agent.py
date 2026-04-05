@@ -10,7 +10,9 @@ from typing import Any
 from google import genai
 from google.genai import types
 
-from schemas import HoldingSentiment, MarketIntelOutput, PortfolioInput
+import traceback
+
+from schemas import Catalyst, HoldingSentiment, MarketIntelOutput, PortfolioInput
 
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -21,7 +23,7 @@ _NO_NEWS_SENTINELS = {
     "- no summary was generated.",
 }
 
-_SYSTEM_PROMPT = (
+SYSTEM_PROMPT = (
     "You are a disciplined financial market intelligence analyst. "
     "You are given a pre-computed company news summary already aggregated from multiple articles. "
     "Your task is to estimate the likely effect of this information on the company's value. "
@@ -45,37 +47,29 @@ _SYSTEM_PROMPT = (
     "2. Evidence strength where specific facts are stronger than opinions or speculation. "
     "3. Materiality, meaning whether this information meaningfully affects company value, risk, or expectations. "
 
-    "SCORING RULES: "
-    "sentiment_score must reflect real business impact, not writing style. "
-    "sentiment_score is a float between -1.0 and 1.0. "
-    "Use strong positive (>0.5) or strong negative (<-0.5) scores only when clearly supported by hard financial facts. "
-    "Use moderate scores (0.1 to 0.4 or -0.1 to -0.4) for news with some factual substance but limited certainty or materiality. "
-    "If the summary is vague, speculative, or lacks financial or operational detail, keep sentiment_score near 0. "
-    "If no meaningful value-relevant catalyst exists, use sentiment_score of 0, event_type='none', and impact='low'. "
-    "Analyst price targets and opinions alone do NOT justify strong scores — they are forecasts, not facts. "
-    "Institutional position changes (fund buys/sells) without disclosed size or strategic rationale are low-impact. "
-
     "ALLOWED VALUES: "
     "event_type must be exactly one of ['earnings','regulatory','lawsuit','macro','none']. "
     "impact must be exactly one of ['low','medium','high']. "
 
     "CATALYST GRADING RULES: "
-    "Each catalyst string must end with a sentiment grade tag indicating its directional effect. "
-    "Append '(+)' if the catalyst has a positive effect on the company's value. "
-    "Append '(-)' if the catalyst has a negative effect on the company's value. "
-    "Append '(=)' if the catalyst is neutral, mixed, or has no clear directional effect. "
-    "Every catalyst must end with exactly one grade tag — '(+)', '(-)', or '(=)'. No exceptions. "
-    "Examples: "
-    "'Company beat EPS estimates by 12% (+)', "
-    "'Regulator opened formal investigation into core business (-)', "
-    "'One fund trimmed position while another increased holdings (=)'. "
+    "Each catalyst must be returned as a JSON object with two fields: "
+    "  \"text\": a short description of the specific value-relevant observation, "
+    "  \"grade\": an integer from -3 to +3 representing the magnitude and direction of impact. "
+    "Grading scale: "
+    "  +3 = Strong positive (hard facts: earnings beat, major contract, strong revenue growth). "
+    "  +2 = Moderate positive (credible growth signal, favorable analyst upgrade backed by reasoning). "
+    "  +1 = Mild positive (speculative upside, minor operational improvement). "
+    "   0 = Neutral, mixed, or no clear directional effect. "
+    "  -1 = Mild negative (minor headwind, speculative risk). "
+    "  -2 = Moderate negative (confirmed regulatory probe, notable revenue miss, credible competitive threat). "
+    "  -3 = Strong negative (lawsuit verdict, major earnings miss, executive fraud, confirmed material loss). "
+    "Be conservative: analyst price targets and opinions alone do NOT justify grades above +1 or below -1. "
+    "Institutional position changes without disclosed size or strategic rationale are grade 0. "
 
     "RETURN STRICT JSON ONLY with these fields: "
-    "{ \"sentiment_score\": <float>, \"event_type\": <string>, \"impact\": <string>, "
-    "\"summary\": <string>, \"catalysts\": [<string>, ...] } "
+    "{ \"event_type\": <string>, \"impact\": <string>, "
+    "\"summary\": <string>, \"catalysts\": [{\"text\": <string>, \"grade\": <int>}, ...] } "
     "summary must explain the relation between the news and the company's value in fewer than 3 sentences. "
-    "catalysts must be a list of short strings, each describing a specific value-relevant observation, "
-    "and each ending with exactly one grade tag '(+)', '(-)', or '(=)'. "
     "Do not wrap the JSON in markdown code fences. Return raw JSON only."
 )
 
@@ -110,14 +104,6 @@ def _portfolio_holdings(portfolio: Any) -> list[dict[str, Any]]:
     )
 
 
-def _clamp_sentiment(value: Any) -> float:
-    try:
-        score = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    return max(-1.0, min(1.0, score))
-
-
 def _clean_event_type(value: Any) -> str:
     allowed = {"earnings", "regulatory", "lawsuit", "macro", "none"}
     text = str(value or "").strip().lower()
@@ -142,7 +128,7 @@ def _no_news_holding(ticker: str) -> HoldingSentiment:
         event_type="none",
         impact="low",
         summary="No clear value-relevant catalyst from available summarized news.",
-        catalysts=[],
+        catalysts=[],  # list[Catalyst]
     )
 
 
@@ -165,7 +151,7 @@ def _analyze_summary_with_llm(client: genai.Client, ticker: str, summary_text: s
         "Return JSON only."
     )
 
-    full_prompt = _SYSTEM_PROMPT + "\n\n" + user_prompt
+    full_prompt = SYSTEM_PROMPT + "\n\n" + user_prompt
 
     response = client.models.generate_content(
         model=GEMINI_MODEL,
@@ -177,7 +163,17 @@ def _analyze_summary_with_llm(client: genai.Client, ticker: str, summary_text: s
 
     parsed = _parse_llm_json(response.text or "")
     catalysts_raw = parsed.get("catalysts", [])
-    catalysts = [str(c).strip() for c in catalysts_raw if str(c).strip()] if isinstance(catalysts_raw, list) else []
+    catalysts: list[Catalyst] = []
+    if isinstance(catalysts_raw, list):
+        for c in catalysts_raw:
+            if isinstance(c, dict) and c.get("text"):
+                grade = max(-3, min(3, int(c.get("grade", 0))))
+                catalysts.append(Catalyst(text=str(c["text"]).strip(), grade=grade))
+
+    if catalysts:
+        sentiment_score = max(-1.0, min(1.0, sum(c.grade for c in catalysts) / (3.0 * len(catalysts))))
+    else:
+        sentiment_score = 0.0
 
     summary = str(parsed.get("summary") or "").strip()
     if not summary:
@@ -185,7 +181,7 @@ def _analyze_summary_with_llm(client: genai.Client, ticker: str, summary_text: s
 
     return HoldingSentiment(
         ticker=ticker,
-        sentiment_score=_clamp_sentiment(parsed.get("sentiment_score")),
+        sentiment_score=sentiment_score,
         event_type=_clean_event_type(parsed.get("event_type")),
         impact=_clean_impact(parsed.get("impact")),
         summary=summary,
@@ -233,7 +229,7 @@ def market_intel_agent(
     client = genai.Client(api_key=GEMINI_API_KEY)
 
     holdings_sentiment: list[HoldingSentiment] = []
-    active_catalysts: list[str] = []
+    active_catalysts: list[Catalyst] = []
 
     for holding in holdings:
         ticker = str(holding.get("ticker") or "").upper().strip()
@@ -247,12 +243,13 @@ def market_intel_agent(
             try:
                 scored = _analyze_summary_with_llm(client=client, ticker=ticker, summary_text=summary_text)
             except Exception:
+                traceback.print_exc()
                 scored = _no_news_holding(ticker)
                 scored.summary = "Unable to parse a clear value-relevant catalyst from summarized news."
 
         holdings_sentiment.append(scored)
-        for catalyst in scored.catalysts:
-            active_catalysts.append(f"{ticker}: {catalyst}")
+        for c in scored.catalysts:
+            active_catalysts.append(Catalyst(text=f"{ticker}: {c.text}", grade=c.grade))
 
     aggregate_score = _aggregate_sentiment(holdings=holdings, scored=holdings_sentiment)
 
