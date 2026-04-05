@@ -14,7 +14,7 @@ from schemas import HoldingSentiment, MarketIntelOutput, PortfolioInput
 
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = "gemma-3-1b-it"
+GEMINI_MODEL = "gemini-2.5-flash"  # or "gemini-1.5-pro", etc.
 
 _NO_NEWS_SENTINELS = {
     "- no article content available to summarize.",

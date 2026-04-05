@@ -8,18 +8,21 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import textwrap
 from dataclasses import asdict, dataclass
 from typing import Optional
-import debug as debug
-from data.market import get_portfolio_data
+
+# Add parent directory to path to allow imports from utilities and agents
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from utilities.market import get_portfolio_data
 from agents.factor_compression import (
     FactorCluster,
     FactorCompression,
     compute_factor_compression,
 )
 
-from utilities.market import get_portfolio_data
 from google import genai
 from google.genai import types
 import numpy as np

@@ -133,6 +133,26 @@ def _synthesize_with_claude(
 
     client = genai.Client(api_key=GEMINI_API_KEY)
 
+    # Build factor compression section if available
+    fc = agent_risk.computed.factor_compression
+    if fc:
+        cluster_lines = "\n".join(
+            f"    Cluster {c.cluster_id + 1} ({c.dominant_sector}): "
+            f"{', '.join(c.tickers)} "
+            f"({'standalone' if c.avg_intra_correlation is None else f'avg intra-correlation: {c.avg_intra_correlation:.2f}'})"
+            for c in fc.clusters
+        )
+        factor_section = textwrap.dedent(f"""\
+        FACTOR COMPRESSION
+        Holdings count: {fc.num_holdings}
+        Effective N: {fc.effective_n} (compression ratio: {fc.compression_ratio:.1%})
+        Variance explained by top 3 factors: {fc.variance_explained_top3:.1%}
+        Correlated clusters:
+{cluster_lines}
+        """)
+    else:
+        factor_section = "\nFACTOR COMPRESSION\nNot computed (fewer than 2 holdings with price data).\n"
+
     risk_section = textwrap.dedent(f"""\
         RISK ANALYSIS
         -------------
@@ -143,6 +163,7 @@ def _synthesize_with_claude(
         Worst Drawdown  : {agent_risk.computed.worst_drawdown_ticker} ({agent_risk.computed.worst_drawdown_pct:.1%})
         High-Corr Pairs : {", ".join(agent_risk.computed.high_corr_pairs) or "None above 0.85"}
 
+        {factor_section}
         Critical Risks (ranked):
         {chr(10).join(f"  {i + 1}. {r}" for i, r in enumerate(agent_risk.critical_risks))}
 
