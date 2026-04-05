@@ -91,3 +91,4 @@ class Advisory:
     recommendations: list[str]    # specific action items
     risk: RiskOutput
     market_intel: MarketIntelOutput
+    ticker_comments: dict[str, str] = field(default_factory=dict)  # ticker -> news impact comment
