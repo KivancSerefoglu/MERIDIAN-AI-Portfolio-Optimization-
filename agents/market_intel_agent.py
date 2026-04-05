@@ -14,7 +14,7 @@ from schemas import HoldingSentiment, MarketIntelOutput, PortfolioInput
 
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemma-3-1b-it"
 
 _NO_NEWS_SENTINELS = {
     "- no article content available to summarize.",
@@ -56,7 +56,7 @@ _SYSTEM_PROMPT = (
     "impact must be exactly one of ['low','medium','high']. "
 
     "RETURN STRICT JSON ONLY with fields: sentiment_score, event_type, impact, summary, catalysts. "
-    "summary must be one sentence. catalysts must be a list of short strings. "
+    "summary must be explain relation between the news and the company's value. Also, summary must be shorter than 3 sentences. catalysts must be a list of short strings and explain relation between the news and the company's value. "
 )
 
 
@@ -139,19 +139,22 @@ def _parse_llm_json(content: str) -> dict[str, Any]:
 
 def _analyze_summary_with_llm(client: genai.Client, ticker: str, summary_text: str) -> HoldingSentiment:
     user_prompt = (
-        f"Ticker: {ticker.upper()}\\n"
-        "Company summarized news (already aggregated from multiple articles):\\n"
-        f"{summary_text}\\n\\n"
+        f"Ticker: {ticker.upper()}\n"
+        "Company summarized news (already aggregated from multiple articles):\n"
+        f"{summary_text}\n\n"
         "Return JSON only."
     )
+
+    full_prompt = _SYSTEM_PROMPT + "\n\n" + user_prompt
+
     response = client.models.generate_content(
         model=GEMINI_MODEL,
-        contents=user_prompt,
+        contents=full_prompt,
         config=types.GenerateContentConfig(
-            system_instruction=_SYSTEM_PROMPT,
             temperature=0.1,
         ),
     )
+
     parsed = _parse_llm_json(response.text or "")
     catalysts_raw = parsed.get("catalysts", [])
     catalysts = [str(c).strip() for c in catalysts_raw if str(c).strip()] if isinstance(catalysts_raw, list) else []
