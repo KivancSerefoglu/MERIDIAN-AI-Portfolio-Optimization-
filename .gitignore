@@ -6,4 +6,4 @@ venv/
 *.egg-info/
 data/
 data/cache.pkl
-.claude/
+.claude/*.tmp.*
