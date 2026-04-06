@@ -1,0 +1,87 @@
+import yfinance as yf
+import pandas as pd
+import os
+import pickle
+from datetime import datetime
+
+from google import genai
+from dotenv import load_dotenv
+
+load_dotenv()
+_GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+_GEMINI_MODEL = "gemini-2.5-flash"
+
+
+def _infer_sector_with_llm(ticker: str) -> str:
+    """Fall back to Gemini to classify a ticker's GICS sector when yfinance returns nothing."""
+    if not _GEMINI_API_KEY:
+        return "Unknown"
+    try:
+        client = genai.Client(api_key=_GEMINI_API_KEY)
+        response = client.models.generate_content(
+            model=_GEMINI_MODEL,
+            contents=(
+                f"What is the GICS sector for the stock ticker '{ticker}'? "
+                "Reply with ONLY the sector name (e.g. Technology, Financials, Health Care, "
+                "Consumer Discretionary, Consumer Staples, Energy, Industrials, Materials, "
+                "Real Estate, Communication Services, Utilities). "
+                "If the ticker is delisted or unknown, reply with 'Unknown'."
+            ),
+        )
+        return response.text.strip().strip(".") or "Unknown"
+    except Exception:
+        return "Unknown"
+
+CACHE_FILE = "data/cache.pkl"
+
+
+def load_cache() -> dict:
+    if os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, "rb") as f:
+            return pickle.load(f)
+    return {}
+
+
+def save_cache(cache: dict) -> None:
+    os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
+    with open(CACHE_FILE, "wb") as f:
+        pickle.dump(cache, f)
+
+
+def get_portfolio_data(tickers: list[str]) -> dict[str, dict]:
+
+    cache = load_cache()
+    result: dict[str, dict] = {}
+    now = datetime.now()
+
+    for ticker in tickers:
+        # Return cached entry if it's less than 1 day old
+        if ticker in cache and (now - cache[ticker]["timestamp"]).days < 1:
+            result[ticker] = cache[ticker]["data"]
+            continue
+
+        try:
+            stock = yf.Ticker(ticker)
+            history = stock.history(period="1y")   # 1y to match risk_agent needs
+            info = stock.info
+
+            data = {
+                "current_price": (
+                    info.get("currentPrice")
+                    or info.get("regularMarketPrice")
+                    or info.get("previousClose")
+                ),
+                "sector": info.get("sector") or _infer_sector_with_llm(ticker),
+                "beta": info.get("beta") or 1.0,
+                "market_cap": info.get("marketCap"),
+                "price_history": history["Close"],
+            }
+
+            result[ticker] = data
+            cache[ticker] = {"data": data, "timestamp": now}
+
+        except Exception as e:
+            print(f"Error fetching data for {ticker}: {e}")
+
+    save_cache(cache)
+    return result
